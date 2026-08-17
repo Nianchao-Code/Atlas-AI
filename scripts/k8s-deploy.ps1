@@ -1,6 +1,7 @@
 # Deploy Atlas AI to a local Kubernetes cluster (Docker Desktop / minikube).
 param(
-  [string]$OpenAIKey = $env:OPENAI_API_KEY
+  [string]$OpenAIKey = $env:OPENAI_API_KEY,
+  [string]$Tag = (Get-Date -Format "yyyyMMdd-HHmmss")
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,9 +12,11 @@ if (-not $OpenAIKey) {
   Write-Host "Set OPENAI_API_KEY or pass -OpenAIKey" -ForegroundColor Yellow
 }
 
-Write-Host "Building images..."
-docker build -t atlas-api:latest ./backend
-docker build -t atlas-frontend:latest ./frontend
+Write-Host "Building images (tag: $Tag)..."
+docker build -t "atlas-api:$Tag" ./backend
+docker tag "atlas-api:$Tag" atlas-api:latest
+docker build -t "atlas-frontend:$Tag" ./frontend
+docker tag "atlas-frontend:$Tag" atlas-frontend:latest
 
 $ctx = kubectl config current-context 2>$null
 Write-Host "Kubernetes context: $ctx"
@@ -40,7 +43,10 @@ if ($OpenAIKey) {
 Write-Host "Applying manifests..."
 kubectl apply -f ./infra/k8s/atlas.yaml
 
-Write-Host "Waiting for rollouts..."
+Write-Host "Forcing pod recreate with new image..."
+kubectl rollout restart deployment/api deployment/worker deployment/frontend -n atlas
+kubectl delete pod -l app=worker -n atlas --wait=true 2>$null
+kubectl delete pod -l app=api -n atlas --wait=true 2>$null
 kubectl rollout status deployment/api -n atlas --timeout=180s
 kubectl rollout status deployment/worker -n atlas --timeout=180s
 kubectl rollout status deployment/frontend -n atlas --timeout=120s

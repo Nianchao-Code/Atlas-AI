@@ -31,19 +31,24 @@ async def run_worker() -> None:
     await queue.start()
     log.info("worker.started", kafka=bool(settings.kafka_brokers))
     try:
-        async for envelope in queue.jobs():
-            job = envelope.job
+        while True:
             try:
-                n = await indexer.index_job(job)
-                await queue.ack(envelope)
-                log.info("worker.indexed", doc_id=job.get("doc_id"), chunks=n)
-            except Exception:
-                log.exception("worker.failed", doc_id=job.get("doc_id"))
-                rec = await catalog.get(job["doc_id"])
-                if rec:
-                    rec.status = "failed"
-                    rec.error = "index_failed"
-                    await catalog.upsert(rec)
+                async for envelope in queue.jobs():
+                    job = envelope.job
+                    try:
+                        n = await indexer.index_job(job)
+                        await queue.ack(envelope)
+                        log.info("worker.indexed", doc_id=job.get("doc_id"), chunks=n)
+                    except Exception:
+                        log.exception("worker.failed", doc_id=job.get("doc_id"))
+                        rec = await catalog.get(job["doc_id"])
+                        if rec:
+                            rec.status = "failed"
+                            rec.error = "index_failed"
+                            await catalog.upsert(rec)
+            except (redis.TimeoutError, TimeoutError, redis.RedisError):
+                log.warning("worker.redis.retry")
+                await asyncio.sleep(1)
     finally:
         await queue.close()
         await r.aclose()

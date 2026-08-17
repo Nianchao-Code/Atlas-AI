@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import socket
@@ -91,16 +92,18 @@ class IndexQueue:
             return
         while True:
             try:
+                # Poll instead of BLOCK — redis-py async + BLOCK timeouts crash the worker in K8s.
                 resp = await self.r.xreadgroup(
                     "indexers",
                     consumer,
                     {settings.index_stream: ">"},
                     count=1,
-                    block=5000,
                 )
-            except (redis.TimeoutError, TimeoutError):
+            except (redis.TimeoutError, TimeoutError, redis.RedisError):
+                await asyncio.sleep(1)
                 continue
             if not resp:
+                await asyncio.sleep(1)
                 continue
             for _stream, messages in resp:
                 for msg_id, fields in messages:
