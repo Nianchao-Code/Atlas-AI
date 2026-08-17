@@ -56,8 +56,8 @@ Offline eval
 Requires Python 3.11+, Node 20+, Docker (Redis + Qdrant).
 
 ```bash
-git clone https://github.com/Nianchao-Code/atlas-ai.git
-cd atlas-ai
+git clone https://github.com/Nianchao-Code/Atlas-AI.git
+cd Atlas-AI
 cp .env.example .env
 # Set OPENAI_API_KEY. Compatible gateways: set OPENAI_BASE_URL.
 
