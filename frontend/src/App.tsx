@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  ask,
+  askStream,
   deleteDoc,
   health,
   listDocs,
@@ -52,8 +52,38 @@ export default function App() {
   async function onAsk() {
     setBusy(true);
     setError(null);
+    setResult({
+      answer: "",
+      abstained: false,
+      citations: [],
+      trace: [],
+      retrieval_ms: 0,
+      total_ms: 0,
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      tokens_saved_vs_naive: 0,
+      cache_hit: false,
+    });
+    let streamed = "";
     try {
-      const r = await ask(question);
+      const r = await askStream(question, {
+        onMeta: (meta) => {
+          setResult((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  retrieval_ms: meta.retrieval_ms,
+                  trace: meta.trace,
+                  citations: meta.citations,
+                }
+              : prev,
+          );
+        },
+        onToken: (text) => {
+          streamed += text;
+          setResult((prev) => (prev ? { ...prev, answer: streamed } : prev));
+        },
+      });
       setResult(r);
       await refresh();
     } catch (e) {
@@ -140,7 +170,7 @@ export default function App() {
               ))}
             </div>
             <button className="primary" disabled={busy} onClick={() => void onAsk()}>
-              {busy ? "Graph running…" : "Retrieve and answer"}
+              {busy ? "Streaming answer…" : "Retrieve and answer"}
             </button>
             {result && (
               <div className={`answer ${result.abstained ? "abstain" : ""}`}>

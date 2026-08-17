@@ -85,6 +85,48 @@ async function ensureOk(res: Response) {
   }
 }
 
+export async function askStream(
+  question: string,
+  handlers: {
+    onMeta?: (data: { retrieval_ms: number; trace: TraceNode[]; citations: Citation[] }) => void;
+    onToken?: (text: string) => void;
+  },
+): Promise<QueryResponse> {
+  const res = await fetch("/api/v1/query/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question, use_cache: true }),
+  });
+  await ensureOk(res);
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error("No response body");
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalPayload: QueryResponse | null = null;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop() ?? "";
+    for (const part of parts) {
+      const lines = part.split("\n");
+      const eventLine = lines.find((l) => l.startsWith("event:"));
+      const dataLine = lines.find((l) => l.startsWith("data:"));
+      if (!eventLine || !dataLine) continue;
+      const event = eventLine.slice(6).trim();
+      const data = JSON.parse(dataLine.slice(5).trim());
+      if (event === "meta") handlers.onMeta?.(data);
+      if (event === "token") handlers.onToken?.(data.text as string);
+      if (event === "done") finalPayload = data as QueryResponse;
+    }
+  }
+  if (!finalPayload) throw new Error("Stream ended without final payload");
+  return finalPayload;
+}
+
 export async function ask(question: string): Promise<QueryResponse> {
   const res = await fetch("/api/v1/query", {
     method: "POST",

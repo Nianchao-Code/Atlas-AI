@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     max_retrieve_retries: int = 2
     semantic_cache_threshold: float = 0.92
 
+    enable_cross_encoder: bool = True
+    cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
     embedded_worker: bool = True
     log_level: str = "INFO"
     samples_dir: str = "../samples"

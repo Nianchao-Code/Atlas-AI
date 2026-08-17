@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -10,7 +11,7 @@ import redis.asyncio as redis
 import structlog
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import ORJSONResponse
+from fastapi.responses import ORJSONResponse, StreamingResponse
 
 from app.config import settings
 from app.evaluate import run_eval
@@ -172,6 +173,22 @@ async def query(req: QueryRequest, s: StateDep):
         cache_hit=payload["cache_hit"],
     )
     return payload
+
+
+@app.post("/api/v1/query/stream")
+async def query_stream(req: QueryRequest, s: StateDep):
+    async def events():
+        async for evt in s.pipeline.astream(req.question, use_cache=req.use_cache):
+            if evt["type"] == "done":
+                data = evt["data"]
+                obs.record_query(
+                    retrieval_ms=float(data.get("retrieval_ms") or 0),
+                    prompt_tokens=int(data.get("prompt_tokens") or 0),
+                    cache_hit=bool(data.get("cache_hit")),
+                )
+            yield f"event: {evt['type']}\ndata: {json.dumps(evt['data'], ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream")
 
 
 @app.post("/api/v1/eval")

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from collections.abc import AsyncIterator
+
 from openai import AsyncOpenAI
 
 from app.config import settings
@@ -58,6 +60,28 @@ async def chat_json(
         "completion": usage.completion_tokens if usage else 0,
     }
     return data
+
+
+async def chat_text_stream(
+    *,
+    system: str,
+    user: str,
+    model: str | None = None,
+    temperature: float = 0.1,
+) -> AsyncIterator[str]:
+    stream = await llm().chat.completions.create(
+        model=model or settings.chat_model,
+        temperature=temperature,
+        stream=True,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    )
+    async for chunk in stream:
+        delta = chunk.choices[0].delta.content or ""
+        if delta:
+            yield delta
 
 
 async def chat_text(

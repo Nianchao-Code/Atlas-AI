@@ -1,0 +1,15 @@
+{
+  "smoke": {
+    "min_retrieval_recall": 0.35,
+    "min_abstention_accuracy": 0.0,
+    "max_hallucination_rate": 1.0
+  },
+  "full": {
+    "min_retrieval_recall": 0.75,
+    "min_mean_faithfulness": 0.7,
+    "min_mean_correctness": 0.65,
+    "max_hallucination_rate": 0.15,
+    "min_abstention_accuracy": 1.0,
+    "min_token_reduction_pct": 10.0
+  }
+}
