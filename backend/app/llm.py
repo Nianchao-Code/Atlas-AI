@@ -23,7 +23,8 @@ def llm() -> AsyncOpenAI:
 
 
 def llm_configured() -> bool:
-    return bool(settings.openai_api_key)
+    key = (settings.openai_api_key or "").strip()
+    return bool(key) and key not in {"replace-me", "changeme", "sk-missing"}
 
 
 async def embed_texts(texts: list[str]) -> list[list[float]]:
