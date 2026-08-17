@@ -113,6 +113,7 @@ spec:
     spec:
       containers:
         - name: api
+          # scripts/k8s-deploy.ps1 rewrites this tag to the image it just built.
           image: atlas-api:latest
           imagePullPolicy: IfNotPresent
           ports: [{ containerPort: 8000 }]

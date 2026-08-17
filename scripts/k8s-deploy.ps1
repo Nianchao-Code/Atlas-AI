@@ -84,22 +84,29 @@ if ($OpenAIKey) {
     --dry-run=client -o yaml | kubectl apply -f -
 }
 
-Write-Host "Applying manifests..."
-kubectl apply -f ./infra/k8s/atlas.yaml
-
 if ($imported) {
-  Write-Host "Pinning deployments to imported tag $Tag ..."
-  kubectl set image deployment/api api="atlas-api:${Tag}" -n atlas
-  kubectl set image deployment/worker worker="atlas-api:${Tag}" -n atlas
-  kubectl set image deployment/frontend frontend="atlas-frontend:${Tag}" -n atlas
+  $apiImage = "atlas-api:${Tag}"
+  $webImage = "atlas-frontend:${Tag}"
 } else {
   Write-Host "Could not get $Tag into the cluster; falling back to :latest." -ForegroundColor Yellow
   Write-Host "If the cluster does not share this Docker image store, :latest there may be stale." -ForegroundColor Yellow
   docker ps --format "  {{.Names}}  {{.Image}}"
-  kubectl set image deployment/api api=atlas-api:latest -n atlas
-  kubectl set image deployment/worker worker=atlas-api:latest -n atlas
-  kubectl set image deployment/frontend frontend=atlas-frontend:latest -n atlas
+  $apiImage = "atlas-api:latest"
+  $webImage = "atlas-frontend:latest"
 }
+
+# Render the tag into the manifest instead of applying :latest and correcting it
+# with `kubectl set image` afterwards. That left a window where pods were created
+# pointing at a tag the cluster may not have, which fails under
+# imagePullPolicy: IfNotPresent. The manifest keeps :latest as its standalone
+# default so `kubectl apply -f infra/k8s/atlas.yaml` still works on its own.
+Write-Host "Applying manifests (api/worker: $apiImage, frontend: $webImage)..."
+$manifest = Get-Content ./infra/k8s/atlas.yaml -Raw
+$manifest = $manifest.Replace("image: atlas-api:latest", "image: $apiImage")
+$manifest = $manifest.Replace("image: atlas-frontend:latest", "image: $webImage")
+$rendered = Join-Path ([System.IO.Path]::GetTempPath()) "atlas-rendered.yaml"
+[System.IO.File]::WriteAllText($rendered, $manifest, (New-Object System.Text.UTF8Encoding($false)))
+kubectl apply -f $rendered
 
 Write-Host "Resetting stuck Redis index stream..."
 kubectl rollout status deployment/redis -n atlas --timeout=60s
