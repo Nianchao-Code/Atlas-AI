@@ -11,16 +11,23 @@ from app.models import EvalCaseResult, EvalReport
 
 
 def load_golden() -> list[dict]:
+    # Walk every ancestor rather than indexing a fixed depth. samples/ sits three
+    # levels above this file in the repo but only two inside the image, where
+    # parents[3] does not exist -- and building the candidate list eagerly meant
+    # that IndexError fired before any path was even tried.
     candidates = [
         Path(settings.samples_dir) / "eval" / "golden.json",
         Path("/app/samples/eval/golden.json"),
-        Path(__file__).resolve().parents[2] / "samples" / "eval" / "golden.json",
-        Path(__file__).resolve().parents[3] / "samples" / "eval" / "golden.json",
+        *(p / "samples" / "eval" / "golden.json" for p in Path(__file__).resolve().parents),
     ]
+    seen: set[Path] = set()
     for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
         if path.exists():
             return json.loads(path.read_text(encoding="utf-8"))
-    searched = ", ".join(str(p) for p in candidates)
+    searched = ", ".join(str(p) for p in seen)
     raise FileNotFoundError(f"golden.json not found. Looked in: {searched}")
 
 
