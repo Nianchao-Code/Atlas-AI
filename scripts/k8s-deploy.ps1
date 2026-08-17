@@ -4,7 +4,8 @@ param(
   [string]$Tag = (Get-Date -Format "yyyyMMdd-HHmmss")
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
+$PSNativeCommandUseErrorActionPreference = $false
 $Root = Split-Path $PSScriptRoot -Parent
 Set-Location $Root
 
@@ -94,9 +95,9 @@ kubectl rollout status deployment/redis -n atlas --timeout=60s
 kubectl exec deploy/redis -n atlas -- redis-cli DEL atlas:index | Out-Null
 
 Write-Host "Forcing Recreate of api/worker/frontend..."
-kubectl delete pod -l app=api -n atlas --force --grace-period=0 2>$null
-kubectl delete pod -l app=worker -n atlas --force --grace-period=0 2>$null
-kubectl delete pod -l app=frontend -n atlas --force --grace-period=0 2>$null
+kubectl delete pod -l app=api -n atlas --force --grace-period=0 2>$null | Out-Null
+kubectl delete pod -l app=worker -n atlas --force --grace-period=0 2>$null | Out-Null
+kubectl delete pod -l app=frontend -n atlas --force --grace-period=0 2>$null | Out-Null
 
 try {
   kubectl rollout status deployment/api -n atlas --timeout=90s
