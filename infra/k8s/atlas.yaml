@@ -28,17 +28,6 @@ type: Opaque
 stringData:
   OPENAI_API_KEY: "replace-me"
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: upload-data
-  namespace: atlas
-spec:
-  accessModes: [ReadWriteOnce]
-  resources:
-    requests:
-      storage: 2Gi
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -121,6 +110,8 @@ metadata:
   namespace: atlas
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels: { app: api }
   template:
@@ -155,8 +146,7 @@ spec:
           configMap:
             name: atlas-corpus
         - name: uploads
-          persistentVolumeClaim:
-            claimName: upload-data
+          emptyDir: {}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -165,6 +155,8 @@ metadata:
   namespace: atlas
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels: { app: worker }
   template:
@@ -186,15 +178,10 @@ spec:
             - name: samples
               mountPath: /app/samples/corpus
               readOnly: true
-            - name: uploads
-              mountPath: /app/data
       volumes:
         - name: samples
           configMap:
             name: atlas-corpus
-        - name: uploads
-          persistentVolumeClaim:
-            claimName: upload-data
 ---
 apiVersion: v1
 kind: Service
@@ -212,6 +199,8 @@ metadata:
   namespace: atlas
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels: { app: frontend }
   template:
