@@ -67,6 +67,10 @@ kubectl create configmap atlas-corpus `
   --from-file=./samples/corpus/ `
   -n atlas `
   --dry-run=client -o yaml | kubectl apply -f -
+kubectl create configmap atlas-eval `
+  --from-file=./samples/eval/ `
+  -n atlas `
+  --dry-run=client -o yaml | kubectl apply -f -
 
 if ($OpenAIKey) {
   kubectl create secret generic atlas-llm `

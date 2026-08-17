@@ -124,6 +124,9 @@ spec:
             - name: samples
               mountPath: /app/samples/corpus
               readOnly: true
+            - name: eval
+              mountPath: /app/samples/eval
+              readOnly: true
             - name: uploads
               mountPath: /app/data
           readinessProbe:
@@ -134,10 +137,15 @@ spec:
             httpGet: { path: /health, port: 8000 }
             initialDelaySeconds: 20
             periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 12
       volumes:
         - name: samples
           configMap:
             name: atlas-corpus
+        - name: eval
+          configMap:
+            name: atlas-eval
         - name: uploads
           emptyDir: {}
 ---

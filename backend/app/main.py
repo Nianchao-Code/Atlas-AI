@@ -208,7 +208,10 @@ async def query_stream(req: QueryRequest, s: StateDep):
 
 @app.post("/api/v1/eval")
 async def eval_run(s: StateDep, limit: int | None = None):
-    return await run_eval(s.pipeline, limit=limit)
+    try:
+        return await run_eval(s.pipeline, limit=limit)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/v1/metrics", response_model=MetricsSnapshot)

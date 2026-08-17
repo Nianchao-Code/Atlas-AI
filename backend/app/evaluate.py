@@ -11,11 +11,17 @@ from app.models import EvalCaseResult, EvalReport
 
 
 def load_golden() -> list[dict]:
-    root = Path(settings.samples_dir)
-    path = root / "eval" / "golden.json"
-    if not path.exists():
-        path = Path(__file__).resolve().parents[2] / "samples" / "eval" / "golden.json"
-    return json.loads(path.read_text(encoding="utf-8"))
+    candidates = [
+        Path(settings.samples_dir) / "eval" / "golden.json",
+        Path("/app/samples/eval/golden.json"),
+        Path(__file__).resolve().parents[2] / "samples" / "eval" / "golden.json",
+        Path(__file__).resolve().parents[3] / "samples" / "eval" / "golden.json",
+    ]
+    for path in candidates:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    searched = ", ".join(str(p) for p in candidates)
+    raise FileNotFoundError(f"golden.json not found. Looked in: {searched}")
 
 
 def _hit(expected_docs: list[str], filenames: list[str]) -> bool:
