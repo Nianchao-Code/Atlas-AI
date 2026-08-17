@@ -22,9 +22,7 @@ function Get-KindNodes {
 function Import-ImageToCluster([string]$Image) {
   $nodes = Get-KindNodes
   if (-not $nodes) {
-    Write-Host "No kind node container found. Images will stay as atlas-*:latest"
-    Write-Host "Running containers:"
-    docker ps --format "  {{.Names}}  {{.Image}}"
+    Write-Host "No kind node container reachable from this Docker context."
     return $false
   }
   foreach ($node in $nodes) {
@@ -54,6 +52,13 @@ $imported = $false
 if ($ctx -match "minikube") {
   minikube image load "atlas-api:$Tag"
   minikube image load "atlas-frontend:$Tag"
+  $imported = $true
+} elseif ($ctx -match "docker-desktop") {
+  # Docker Desktop's cluster reads the same image store the build just wrote to.
+  # Its node container is not visible to `docker ps`, so never treat that as a
+  # failed import: falling back to :latest here picks up a stale tag that lives
+  # only inside the node's containerd and is never refreshed.
+  Write-Host "Docker Desktop cluster shares the local image store; no import needed."
   $imported = $true
 } else {
   $okApi = Import-ImageToCluster "atlas-api:$Tag"
@@ -88,7 +93,9 @@ if ($imported) {
   kubectl set image deployment/worker worker="atlas-api:${Tag}" -n atlas
   kubectl set image deployment/frontend frontend="atlas-frontend:${Tag}" -n atlas
 } else {
-  Write-Host "Keeping image tags at :latest (cluster shares Docker image store, or kind import was skipped)"
+  Write-Host "Could not get $Tag into the cluster; falling back to :latest." -ForegroundColor Yellow
+  Write-Host "If the cluster does not share this Docker image store, :latest there may be stale." -ForegroundColor Yellow
+  docker ps --format "  {{.Names}}  {{.Image}}"
   kubectl set image deployment/api api=atlas-api:latest -n atlas
   kubectl set image deployment/worker worker=atlas-api:latest -n atlas
   kubectl set image deployment/frontend frontend=atlas-frontend:latest -n atlas
