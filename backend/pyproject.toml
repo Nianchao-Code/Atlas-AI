@@ -1,0 +1,40 @@
+[project]
+name = "atlas-ai"
+version = "0.1.0"
+description = "Production RAG platform: hybrid retrieval, corrective graph, eval harness"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.32.0",
+  "pydantic-settings>=2.6.0",
+  "openai>=1.55.0",
+  "langgraph>=0.2.60",
+  "langchain-core>=0.3.0",
+  "qdrant-client>=1.12.0",
+  "redis>=5.2.0",
+  "tiktoken>=0.8.0",
+  "rank-bm25>=0.2.2",
+  "python-multipart>=0.0.17",
+  "pypdf>=5.1.0",
+  "prometheus-client>=0.21.0",
+  "structlog>=24.4.0",
+  "httpx>=0.27.0",
+  "orjson>=3.10.0",
+  "numpy>=2.0.0",
+]
+
+[project.optional-dependencies]
+kafka = ["aiokafka>=0.12.0"]
+dev = ["pytest>=8.3.0", "pytest-asyncio>=0.24.0", "httpx>=0.27.0"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]

@@ -1,0 +1,79 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.5
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  api:
+    build:
+      context: ./backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      QDRANT_URL: http://qdrant:6333
+      EMBEDDED_WORKER: "false"
+      SAMPLES_DIR: /app/samples
+      UPLOAD_DIR: /app/data/uploads
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./samples:/app/samples:ro
+      - upload_data:/app/data
+    depends_on:
+      - redis
+      - qdrant
+
+  worker:
+    build:
+      context: ./backend
+    command: python -m app.worker
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      QDRANT_URL: http://qdrant:6333
+      SAMPLES_DIR: /app/samples
+      UPLOAD_DIR: /app/data/uploads
+    volumes:
+      - ./samples:/app/samples:ro
+      - upload_data:/app/data
+    depends_on:
+      - redis
+      - qdrant
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
+
+  # Kafka-protocol bus. Enable with: docker compose --profile kafka up
+  redpanda:
+    image: redpandadata/redpanda:v24.3.8
+    profiles: ["kafka"]
+    command:
+      - redpanda
+      - start
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+      - --smp=1
+      - --memory=512M
+      - --mode=dev-container
+      - --default-log-level=warn
+    ports:
+      - "19092:19092"
+
+volumes:
+  qdrant_data:
+  upload_data:
