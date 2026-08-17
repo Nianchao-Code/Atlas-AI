@@ -90,13 +90,16 @@ class IndexQueue:
                 yield IndexJobEnvelope(job=job)
             return
         while True:
-            resp = await self.r.xreadgroup(
-                "indexers",
-                consumer,
-                {settings.index_stream: ">"},
-                count=1,
-                block=5000,
-            )
+            try:
+                resp = await self.r.xreadgroup(
+                    "indexers",
+                    consumer,
+                    {settings.index_stream: ">"},
+                    count=1,
+                    block=5000,
+                )
+            except (redis.TimeoutError, TimeoutError):
+                continue
             if not resp:
                 continue
             for _stream, messages in resp:

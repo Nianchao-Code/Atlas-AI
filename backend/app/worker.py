@@ -10,6 +10,7 @@ from app.config import settings
 from app.hybrid import BM25Index
 from app.indexer import Indexer
 from app.obs import Cache
+from app.redis_client import create_redis
 from app.store_docs import Catalog, IndexQueue
 from app.vectors import VectorStore
 
@@ -18,7 +19,7 @@ log = structlog.get_logger()
 
 async def run_worker() -> None:
     logging.basicConfig(level=settings.log_level)
-    r = redis.from_url(settings.redis_url, decode_responses=True)
+    r = create_redis()
     cache = Cache(r)
     vectors = VectorStore()
     vectors.ensure()

@@ -21,6 +21,7 @@ from app.indexer import Indexer
 from app.llm import llm_configured
 from app.models import DocumentRecord, MetricsSnapshot, QueryRequest, QueryResponse
 from app.obs import Cache, obs
+from app.redis_client import create_redis
 from app.store_docs import Catalog, IndexQueue
 from app.vectors import VectorStore
 
@@ -73,7 +74,7 @@ StateDep = Annotated[AppState, Depends(get_state)]
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
-    state.redis = redis.from_url(settings.redis_url, decode_responses=True)
+    state.redis = create_redis()
     state.cache = Cache(state.redis)
     state.vectors = VectorStore()
     state.vectors.ensure()

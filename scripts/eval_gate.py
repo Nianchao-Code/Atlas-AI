@@ -24,6 +24,7 @@ from app.hybrid import BM25Index
 from app.indexer import Indexer
 from app.llm import llm_configured
 from app.obs import Cache
+from app.redis_client import create_redis
 from app.store_docs import Catalog, IndexQueue
 from app.vectors import VectorStore
 
@@ -56,7 +57,7 @@ async def run_gate(mode: str) -> int:
     if mode == "smoke":
         settings.enable_cross_encoder = False
 
-    r = redis.from_url(settings.redis_url, decode_responses=True)
+    r = create_redis()
     cache = Cache(r)
     vectors = VectorStore()
     vectors.ensure()
