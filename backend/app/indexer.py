@@ -28,8 +28,12 @@ class Indexer:
             rec.status = "indexing"
             await self.catalog.upsert(rec)
 
-        path = Path(job["path"])
-        text = job.get("text") or parse_file(path)
+        path = Path(job.get("path") or "")
+        text = job.get("text")
+        if not text:
+            if not path.exists():
+                raise FileNotFoundError(f"index job missing text and path does not exist: {path}")
+            text = parse_file(path)
         chunks = chunk_document(doc_id=doc_id, filename=job["filename"], text=text)
         vectors = await self._embed_cached([c.text for c in chunks])
         self.vectors.upsert(chunks, vectors)

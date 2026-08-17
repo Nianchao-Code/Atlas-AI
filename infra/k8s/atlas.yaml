@@ -14,7 +14,7 @@ data:
   EMBEDDED_WORKER: "false"
   SAMPLES_DIR: /app/samples
   UPLOAD_DIR: /app/data/uploads
-  ENABLE_CROSS_ENCODER: "true"
+  ENABLE_CROSS_ENCODER: "false"
   CHAT_MODEL: gpt-4o
   CHEAP_MODEL: gpt-4o-mini
   EMBEDDING_MODEL: text-embedding-3-small
@@ -181,7 +181,7 @@ spec:
             - name: OPENAI_API_KEY
               valueFrom: { secretKeyRef: { name: atlas-llm, key: OPENAI_API_KEY } }
             - name: WORKER_ID
-              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+              value: atlas-worker
           volumeMounts:
             - name: samples
               mountPath: /app/samples/corpus

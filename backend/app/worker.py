@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import redis.asyncio as redis
 import structlog
 
 from app.config import settings
@@ -29,7 +28,7 @@ async def run_worker() -> None:
     indexer = Indexer(cache, vectors, catalog, bm25)
     queue = IndexQueue(r)
     await queue.start()
-    log.info("worker.started", kafka=bool(settings.kafka_brokers))
+    log.info("worker.started", kafka=bool(settings.kafka_brokers), queue="poll-v3")
     try:
         while True:
             try:
@@ -41,13 +40,14 @@ async def run_worker() -> None:
                         log.info("worker.indexed", doc_id=job.get("doc_id"), chunks=n)
                     except Exception:
                         log.exception("worker.failed", doc_id=job.get("doc_id"))
-                        rec = await catalog.get(job["doc_id"])
+                        rec = await catalog.get(job.get("doc_id", ""))
                         if rec:
                             rec.status = "failed"
                             rec.error = "index_failed"
                             await catalog.upsert(rec)
-            except (redis.TimeoutError, TimeoutError, redis.RedisError):
-                log.warning("worker.redis.retry")
+                        await queue.ack(envelope)
+            except Exception:
+                log.exception("worker.loop.retry")
                 await asyncio.sleep(1)
     finally:
         await queue.close()

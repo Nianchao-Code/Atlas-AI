@@ -7,12 +7,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-import redis.asyncio as redis
 import structlog
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse, StreamingResponse
 
+from app.chunking import parse_file
 from app.config import settings
 from app.evaluate import run_eval
 from app.graph import Pipeline
@@ -129,7 +129,14 @@ async def upload_doc(s: StateDep, file: UploadFile = File(...)):
     dest.write_bytes(raw)
     rec = DocumentRecord(id=doc_id, filename=filename, bytes=len(raw), status="queued")
     await s.catalog.upsert(rec)
-    await s.queue.publish({"doc_id": doc_id, "filename": filename, "path": str(dest)})
+    await s.queue.publish(
+        {
+            "doc_id": doc_id,
+            "filename": filename,
+            "path": str(dest),
+            "text": parse_file(dest),
+        }
+    )
     return rec
 
 
@@ -151,7 +158,14 @@ async def seed(s: StateDep):
             continue
         rec = DocumentRecord(id=doc_id, filename=path.name, bytes=path.stat().st_size, status="queued")
         await s.catalog.upsert(rec)
-        await s.queue.publish({"doc_id": doc_id, "filename": path.name, "path": str(path)})
+        await s.queue.publish(
+            {
+                "doc_id": doc_id,
+                "filename": path.name,
+                "path": str(path),
+                "text": parse_file(path),
+            }
+        )
         created.append(rec)
     return created
 

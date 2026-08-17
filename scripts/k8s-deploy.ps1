@@ -1,4 +1,4 @@
-# Deploy Atlas AI to a local Kubernetes cluster (Docker Desktop / minikube).
+# Deploy Atlas AI to a local Kubernetes cluster (Docker Desktop / minikube / kind).
 param(
   [string]$OpenAIKey = $env:OPENAI_API_KEY,
   [string]$Tag = (Get-Date -Format "yyyyMMdd-HHmmss")
@@ -12,6 +12,21 @@ if (-not $OpenAIKey) {
   Write-Host "Set OPENAI_API_KEY or pass -OpenAIKey" -ForegroundColor Yellow
 }
 
+function Import-ImageToCluster([string]$Image) {
+  $nodes = @(docker ps --filter "label=io.x-k8s.kind.role=control-plane" --format "{{.Names}}")
+  if (-not $nodes) {
+    $nodes = @(docker ps --format "{{.Names}}" | Where-Object { $_ -match "control-plane" })
+  }
+  if (-not $nodes) {
+    Write-Host "No kind node found; Docker Desktop may already see $Image"
+    return
+  }
+  foreach ($node in $nodes) {
+    Write-Host "Importing $Image into cluster node $node ..."
+    docker save $Image | docker exec -i $node ctr -n k8s.io images import -
+  }
+}
+
 Write-Host "Building images (tag: $Tag)..."
 docker build -t "atlas-api:$Tag" ./backend
 docker tag "atlas-api:$Tag" atlas-api:latest
@@ -22,8 +37,11 @@ $ctx = kubectl config current-context 2>$null
 Write-Host "Kubernetes context: $ctx"
 
 if ($ctx -match "minikube") {
-  minikube image load atlas-api:latest
-  minikube image load atlas-frontend:latest
+  minikube image load "atlas-api:$Tag"
+  minikube image load "atlas-frontend:$Tag"
+} else {
+  Import-ImageToCluster "atlas-api:$Tag"
+  Import-ImageToCluster "atlas-frontend:$Tag"
 }
 
 Write-Host "Creating corpus ConfigMap..."
@@ -43,16 +61,25 @@ if ($OpenAIKey) {
 Write-Host "Applying manifests..."
 kubectl apply -f ./infra/k8s/atlas.yaml
 
-Write-Host "Forcing pod recreate with new image..."
-kubectl rollout restart deployment/api deployment/worker deployment/frontend -n atlas
-kubectl delete pod -l app=worker -n atlas --wait=true 2>$null
-kubectl delete pod -l app=api -n atlas --wait=true 2>$null
+Write-Host "Pinning deployments to $Tag ..."
+kubectl set image deployment/api api="atlas-api:${Tag}" -n atlas
+kubectl set image deployment/worker worker="atlas-api:${Tag}" -n atlas
+kubectl set image deployment/frontend frontend="atlas-frontend:${Tag}" -n atlas
+
+Write-Host "Resetting stuck Redis index stream..."
+kubectl rollout status deployment/redis -n atlas --timeout=60s
+kubectl exec deploy/redis -n atlas -- redis-cli DEL atlas:index | Out-Null
+
+Write-Host "Recreating app pods..."
+kubectl delete pod -l app=worker -n atlas --wait=false 2>$null
+kubectl delete pod -l app=api -n atlas --wait=false 2>$null
 kubectl rollout status deployment/api -n atlas --timeout=180s
 kubectl rollout status deployment/worker -n atlas --timeout=180s
 kubectl rollout status deployment/frontend -n atlas --timeout=120s
 
 Write-Host ""
-Write-Host "Atlas AI deployed to namespace 'atlas'." -ForegroundColor Green
+Write-Host "Atlas AI deployed to namespace 'atlas' (image tag $Tag)." -ForegroundColor Green
 Write-Host "Frontend: kubectl port-forward svc/frontend 8080:80 -n atlas"
 Write-Host "Then open http://127.0.0.1:8080"
-Write-Host "API health: kubectl port-forward svc/api 8000:8000 -n atlas  -> http://127.0.0.1:8000/health"
+Write-Host "Confirm worker: kubectl logs deployment/worker -n atlas --tail=20"
+Write-Host "You should see queue=poll-v3. Then Corpus -> Load Kepler sample handbook."

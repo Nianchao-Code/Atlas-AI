@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import socket
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
@@ -13,8 +12,8 @@ from app.config import settings
 from app.models import DocumentRecord
 
 
-def worker_consumer_id(default: str = "worker-1") -> str:
-    return os.environ.get("WORKER_ID") or socket.gethostname() or default
+def worker_consumer_id(default: str = "atlas-worker") -> str:
+    return os.environ.get("WORKER_ID") or default
 
 
 @dataclass
@@ -92,25 +91,48 @@ class IndexQueue:
             return
         while True:
             try:
-                # Poll instead of BLOCK — redis-py async + BLOCK timeouts crash the worker in K8s.
-                resp = await self.r.xreadgroup(
-                    "indexers",
-                    consumer,
-                    {settings.index_stream: ">"},
-                    count=1,
-                )
+                envelope = await self._next_job(consumer)
             except (redis.TimeoutError, TimeoutError, redis.RedisError):
                 await asyncio.sleep(1)
                 continue
-            if not resp:
+            if envelope is None:
                 await asyncio.sleep(1)
                 continue
-            for _stream, messages in resp:
-                for msg_id, fields in messages:
-                    raw = fields.get("job") or fields.get(b"job")
-                    if isinstance(raw, bytes):
-                        raw = raw.decode("utf-8")
-                    yield IndexJobEnvelope(job=json.loads(raw), msg_id=msg_id)
+            yield envelope
+
+    async def _next_job(self, consumer: str) -> IndexJobEnvelope | None:
+        """Claim stuck PEL entries first, then read never-delivered jobs.
+
+        A crashed worker leaves messages in the consumer group's pending list.
+        XREADGROUP with '>' cannot see those; XAUTOCLAIM steals them.
+        """
+        try:
+            claimed = await self.r.xautoclaim(
+                settings.index_stream,
+                "indexers",
+                consumer,
+                min_idle_time=0,
+                start_id="0-0",
+                count=1,
+            )
+            messages = _autoclaim_messages(claimed)
+            if messages:
+                return _envelope(messages[0])
+        except redis.ResponseError:
+            pass
+
+        resp = await self.r.xreadgroup(
+            "indexers",
+            consumer,
+            {settings.index_stream: ">"},
+            count=1,
+        )
+        if not resp:
+            return None
+        for _stream, messages in resp:
+            if messages:
+                return _envelope(messages[0])
+        return None
 
     async def ack(self, envelope: IndexJobEnvelope) -> None:
         if envelope.msg_id is None:
@@ -132,3 +154,21 @@ class IndexQueue:
                 yield json.loads(msg.value.decode("utf-8"))
         finally:
             await consumer.stop()
+
+
+def _autoclaim_messages(claimed: Any) -> list:
+    if not claimed:
+        return []
+    # redis-py: (next_id, messages) or (next_id, messages, deleted)
+    if isinstance(claimed, (list, tuple)) and len(claimed) >= 2:
+        messages = claimed[1]
+        return list(messages or [])
+    return []
+
+
+def _envelope(item: Any) -> IndexJobEnvelope:
+    msg_id, fields = item
+    raw = fields.get("job") or fields.get(b"job")
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    return IndexJobEnvelope(job=json.loads(raw), msg_id=msg_id)
