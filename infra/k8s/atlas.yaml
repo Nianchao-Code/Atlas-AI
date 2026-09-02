@@ -21,6 +21,17 @@ data:
 # Create the LLM secret separately (do not put a real key in this file):
 #   kubectl create secret generic atlas-llm --from-literal=OPENAI_API_KEY=... -n atlas
 ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  namespace: atlas
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -28,6 +39,10 @@ metadata:
   namespace: atlas
 spec:
   replicas: 1
+  # Recreate, not RollingUpdate: the PVC is ReadWriteOnce, so two pods cannot
+  # hold it at once.
+  strategy:
+    type: Recreate
   selector:
     matchLabels: { app: redis }
   template:
@@ -37,12 +52,26 @@ spec:
       containers:
         - name: redis
           image: redis:7-alpine
+          # Redis holds the document catalogue, not just cache. Without AOF a
+          # restart leaves Qdrant full of vectors that no catalogue entry
+          # points at, and the UI reports an empty corpus.
+          args: ["redis-server", "--appendonly", "yes", "--dir", "/data"]
           ports: [{ containerPort: 6379 }]
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          resources:
+            requests: { memory: 64Mi, cpu: 50m }
+            limits: { memory: 256Mi, cpu: 500m }
           readinessProbe:
             exec:
               command: ["redis-cli", "ping"]
             initialDelaySeconds: 3
             periodSeconds: 5
+      volumes:
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: redis-data
 ---
 apiVersion: v1
 kind: Service
@@ -70,6 +99,9 @@ spec:
       containers:
         - name: qdrant
           image: qdrant/qdrant:v1.12.5
+          resources:
+            requests: { memory: 256Mi, cpu: 100m }
+            limits: { memory: 1Gi, cpu: "1" }
           ports: [{ containerPort: 6333 }]
           volumeMounts:
             - name: qdrant-storage
@@ -121,6 +153,12 @@ spec:
           env:
             - name: OPENAI_API_KEY
               valueFrom: { secretKeyRef: { name: atlas-llm, key: OPENAI_API_KEY } }
+          # Headroom for the cross-encoder (PyTorch) when it is enabled. The
+          # limit matters more than the request: without one, a model load can
+          # take the whole node down instead of just this pod.
+          resources:
+            requests: { memory: 512Mi, cpu: 200m }
+            limits: { memory: 2Gi, cpu: "2" }
           volumeMounts:
             - name: samples
               mountPath: /app/samples/corpus
@@ -176,6 +214,9 @@ spec:
               valueFrom: { secretKeyRef: { name: atlas-llm, key: OPENAI_API_KEY } }
             - name: WORKER_ID
               value: atlas-worker
+          resources:
+            requests: { memory: 512Mi, cpu: 200m }
+            limits: { memory: 2Gi, cpu: "2" }
           volumeMounts:
             - name: samples
               mountPath: /app/samples/corpus
@@ -213,6 +254,9 @@ spec:
         - name: frontend
           image: atlas-frontend:latest
           imagePullPolicy: IfNotPresent
+          resources:
+            requests: { memory: 32Mi, cpu: 10m }
+            limits: { memory: 128Mi, cpu: 500m }
           ports: [{ containerPort: 80 }]
           readinessProbe:
             httpGet: { path: /, port: 80 }
