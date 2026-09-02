@@ -23,7 +23,7 @@ the [ablation](#what-each-stage-actually-buys) is why. Recorded by
 | **Orchestration** | LangGraph: guard → cache → rewrite → retrieve → rerank → grade → compress → generate → faithfulness |
 | **Quality** | 53-question golden set tagged by failure mode — recall, precision, faithfulness, correctness, hallucination rate, abstention accuracy, plus a stage-by-stage ablation |
 | **Safety** | API-key auth with per-principal cache isolation and rate limiting; injection resistance measured across 17 attacks and four defense configurations, not asserted |
-| **Ops** | Prometheus metrics from every process; retrieval p50/p95 separate from end-to-end latency; Redis embedding + semantic QA cache |
+| **Ops** | Load-tested to a measured ceiling (592 rps cached, no head-of-line blocking); Prometheus metrics from every process; retrieval p50/p95 separate from end-to-end latency; Redis embedding + semantic QA cache |
 | **Ingest** | Async worker queue (Redis Streams locally, Kafka/Redpanda in production) |
 
 ## Architecture
@@ -134,6 +134,7 @@ frontend/        Ask · Corpus · Eval · SLI dashboards
 samples/corpus   Kepler internal handbook (includes injection test doc)
 samples/eval     Golden question set (53 cases, tagged by category)
 docs/            Demo recording used by this README
+scripts/         Deploy, eval gate, and the harnesses behind the numbers above
 infra/k8s/       Kubernetes manifests (Redis, Qdrant, API, worker, frontend)
 ```
 
@@ -395,6 +396,52 @@ and has an LLM adjudicate whether the answer asserted or complied. Even that
 judge disagreed with itself once on two near-identical negations, which is why
 the remaining 1/3 in the raw output is reported as judge variance rather than a
 finding.
+
+## Throughput
+
+`scripts/loadtest.py` drives one replica from inside the cluster. It runs
+there because `kubectl port-forward` serialises connections and would measure
+itself.
+
+End-to-end throughput with a model in the path measures the model provider, so
+the phases separate what this service contributes from what it waits on.
+
+**Cache-hit path**, no model call, one replica at 2 CPU:
+
+| Concurrency | rps | p50 | p95 |
+| --- | --- | --- | --- |
+| 1 | 418 | 2.3ms | 2.7ms |
+| 4 | 531 | 7.5ms | 9.0ms |
+| 8 | 562 | 14.0ms | 16.6ms |
+| **16** | **592** | 26.4ms | 31.7ms |
+| 32 | 524 | 51.7ms | 96.6ms |
+| 64 | 528 | 97.2ms | 237.3ms |
+
+Throughput peaks near concurrency 16 and then flattens while latency grows
+linearly — the saturation point, not a cliff. No errors at any level.
+
+**Cold path**, model in the loop: 0.3 rps at concurrency 1 (p50 3.8s), 1.1 rps
+at concurrency 4 (p50 3.4s). Latency per request is flat as concurrency rises,
+so the service is holding requests rather than adding to them.
+
+**Head-of-line blocking**, which is the number the BM25 refactor exists to
+protect. Cache hits at concurrency 8, measured quiet, then measured again while
+one 5.2s model request is in flight:
+
+| | p50 | p95 | over 100ms |
+| --- | --- | --- | --- |
+| quiet | 14.2ms | 15.8ms | 0 / 320 |
+| during a 5.2s request | 14.6ms | 21.4ms | 0 / 2360 |
+
+Not one of 2,360 concurrent requests crossed 100ms while a five-second request
+was running. Synchronous work on the event loop would show up here as a cluster
+of slow requests; a 1.36x p95 is ordinary contention.
+
+**The rate limit was the binding constraint, and it was a guess.** At 60/min
+the first run rate-limited 22 of 40 requests at concurrency 4, and all 40 at
+concurrency 16 — a service capable of 592 rps was capped at 1. The limit exists
+to bound spend rather than to protect the app, so it is now 300/min: far above
+any interactive session, far below what a runaway client could burn.
 
 ## Limits
 
