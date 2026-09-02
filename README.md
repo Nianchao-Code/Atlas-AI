@@ -310,6 +310,45 @@ What is exported, and the reasoning behind the shape:
 
 No series carries question or answer text, and a test enforces it.
 
+## Caching
+
+Two layers, and the second one had to be measured before it was worth keeping.
+
+**Exact match** is a Redis hash lookup on the normalised question: 4ms against
+6.7s for the cold path.
+
+**Paraphrase match** is an ANN query against a second Qdrant collection,
+filtered to the asking principal. A reworded question returns in 247ms instead
+of 6.7s.
+
+It was rewritten for two reasons, and only one of them was speed.
+
+**It had never served a hit.** The stored vector was the embedding of the
+rewritten query plus its HyDE paragraph, while lookups embed the raw question.
+Those are different texts: the *same question asked twice* scored 0.817 against
+its own cache entry, under a 0.92 threshold. Every hit the system had ever
+recorded came from the exact-match path. The scan being slow was the less
+interesting half — it was scanning for something it could not match.
+
+**The threshold was guessed.** `scripts/calibrate_cache.py` measures two sets
+of pairs: the same question reworded, and questions one decisive word apart.
+
+| Threshold | Paraphrases caught | Wrong answers served |
+| --- | --- | --- |
+| 0.80 | 6/9 | 0 |
+| **0.82** | **6/9** | **0** |
+| 0.92 (previous) | 2/9 | 0 |
+
+The worst false pair is *"Is Seattle sick leave also capped at 10 days?"*
+against *"How many paid sick days does a Seattle employee receive?"* at 0.768 —
+nearly identical wording, opposite answers. 0.82 clears it by five points.
+Verified end to end: those two still do not fuse.
+
+The old implementation also walked up to 200 Redis entries with two round trips
+each and scored them in Python on every miss. The ANN query replaces that and
+drops the 200-entry window, so what counts as near is decided by the index
+rather than by a recency list.
+
 ## Limits
 
 Measured and known, not hidden. Each of these is a deliberate stopping point
@@ -347,9 +386,13 @@ reaches it, so anyone who can load the page can query. Real user identity means
 a session layer in front, and principals would come from it rather than from a
 secret.
 
-**The semantic cache scans linearly.** A miss walks up to 200 recent entries
-with two Redis round trips each before falling through to the graph. A second
-Qdrant collection is the obvious replacement once that cost matters.
+**The paraphrase cache catches roughly two thirds of rewordings.** At the
+calibrated threshold it hits 6 of 9 measured paraphrases. Looser rephrasings
+fall through to the full pipeline, which is the safe direction to fail, but it
+means the hit rate is bounded by how people happen to phrase things. Raising
+recall here needs a threshold that also fuses questions one decisive word
+apart, so it is not a knob to turn without a better signal than cosine
+similarity.
 
 **The cross-encoder downloads at first use.** `ENABLE_CROSS_ENCODER` is off in
 `infra/k8s/atlas.yaml` because the model is fetched from HuggingFace on the
