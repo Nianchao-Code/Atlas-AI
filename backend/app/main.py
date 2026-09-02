@@ -41,6 +41,7 @@ from app.models import DocumentRecord, MetricsSnapshot, QueryRequest, QueryRespo
 from app.obs import Cache, obs
 from app.qa_cache import QACache
 from app.redis_client import create_redis
+from app.startup import await_dependency
 from app.store_docs import Catalog, IndexQueue
 from app.vectors import VectorStore
 
@@ -151,8 +152,12 @@ async def lifespan(app: FastAPI):
     log_auth_mode()
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
     state.redis = create_redis()
+    await await_dependency("redis", state.redis.ping)
     state.cache = Cache(state.redis)
     state.vectors = VectorStore()
+    await await_dependency(
+        "qdrant", lambda: asyncio.to_thread(state.vectors.client.get_collections)
+    )
     state.vectors.ensure()
     state.catalog = Catalog(state.redis)
     state.qa_cache = QACache()

@@ -11,6 +11,7 @@ from app.indexer import Indexer
 from app.metrics import INDEX_JOBS, set_corpus_size
 from app.obs import Cache
 from app.redis_client import create_redis
+from app.startup import await_dependency
 from app.store_docs import Catalog, IndexQueue
 from app.vectors import VectorStore
 
@@ -28,8 +29,10 @@ async def run_worker() -> None:
         start_http_server(settings.metrics_port)
         log.info("metrics.listening", port=settings.metrics_port)
     r = create_redis()
+    await await_dependency("redis", r.ping)
     cache = Cache(r)
     vectors = VectorStore()
+    await await_dependency("qdrant", lambda: asyncio.to_thread(vectors.client.get_collections))
     vectors.ensure()
     catalog = Catalog(r)
     bm25 = BM25Index()
