@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -57,11 +58,39 @@ def _unique_parents(hits: list[Hit]) -> list[Hit]:
     return out
 
 
+@dataclass(frozen=True)
+class PipelineConfig:
+    """Which retrieval stages are live.
+
+    Serving always uses `from_settings()`, so this changes nothing in
+    production. It exists so the ablation harness can answer the only
+    question that matters about a retrieval stack: does each stage pay
+    for the latency and tokens it costs?
+    """
+
+    dense: bool = True
+    sparse: bool = True
+    rerank: bool = True
+    grade: bool = True
+    rewrite: bool = True
+
+    @classmethod
+    def from_settings(cls) -> "PipelineConfig":
+        return cls(rerank=settings.enable_cross_encoder)
+
+
 class Pipeline:
-    def __init__(self, cache: Cache, vectors: VectorStore, bm25: BM25Index) -> None:
+    def __init__(
+        self,
+        cache: Cache,
+        vectors: VectorStore,
+        bm25: BM25Index,
+        config: PipelineConfig | None = None,
+    ) -> None:
         self.cache = cache
         self.vectors = vectors
         self.bm25 = bm25
+        self.config = config or PipelineConfig.from_settings()
         self.graph = self._build()
 
     def _build(self):
@@ -146,6 +175,9 @@ class Pipeline:
         tracer: Tracer = state["tracer"]
         retries = int(state.get("retries") or 0)
         question = state["question"]
+        if not self.config.rewrite:
+            tracer.span("rewrite", "disabled")
+            return {"rewritten": question, "retries": retries + (1 if state.get("hits") else 0)}
         if not llm_configured():
             tracer.span("rewrite", "skipped (no LLM)")
             return {"rewritten": question, "retries": retries + (1 if state.get("hits") else 0)}
@@ -166,21 +198,39 @@ class Pipeline:
         tracer.span("rewrite", query, retries=retries)
         return {"rewritten": query + "\n" + hyde, "retries": retries}
 
+    async def warm(self) -> None:
+        """Refresh the BM25 snapshot if another process has reindexed.
+
+        Callable ahead of serving so the first query after startup or after an
+        ingest does not pay for a full corpus scroll inside the request. This
+        is a mitigation, not a fix: the rebuild is still O(corpus) and still
+        synchronous, which is fine at handbook scale and would not be at
+        millions of chunks.
+        """
+        rev = await self.cache.r.get("bm25:rev")
+        if rev != getattr(self, "_bm25_rev", None):
+            self.bm25.rebuild(self.vectors.scroll_all())
+            self._bm25_rev = rev
+
     async def retrieve(self, state: RAGState) -> dict[str, Any]:
         import time
 
         tracer: Tracer = state["tracer"]
         q = state.get("rewritten") or state["question"]
         t0 = time.perf_counter()
-        rev = await self.cache.r.get("bm25:rev")
-        if rev != getattr(self, "_bm25_rev", None):
-            self.bm25.rebuild(self.vectors.scroll_all())
-            self._bm25_rev = rev
+        await self.warm()
         vecs = await embed_texts([q])
         bm25_q = _keyword_query(state.get("rewritten"), state["question"])
-        dense = self.vectors.search(vecs[0], settings.retrieve_k)
-        sparse = self.bm25.search(bm25_q, settings.retrieve_k)
-        fused = reciprocal_rank_fusion([dense, sparse], limit=settings.retrieve_k)
+        dense = self.vectors.search(vecs[0], settings.retrieve_k) if self.config.dense else []
+        sparse = self.bm25.search(bm25_q, settings.retrieve_k) if self.config.sparse else []
+        # RRF only means something when there are two rankings to fuse. With a
+        # single retriever, pass its own ranking through untouched so the
+        # ablation measures that retriever and not RRF's rewrite of it.
+        ranked = [lst for lst in (dense, sparse) if lst]
+        if len(ranked) > 1:
+            fused = reciprocal_rank_fusion(ranked, limit=settings.retrieve_k)
+        else:
+            fused = ranked[0][: settings.retrieve_k] if ranked else []
         ms = (time.perf_counter() - t0) * 1000
         tracer.span(
             "retrieve",
@@ -193,7 +243,9 @@ class Pipeline:
     async def rerank(self, state: RAGState) -> dict[str, Any]:
         tracer: Tracer = state["tracer"]
         hits: list[Hit] = state.get("hits") or []
-        reranked = cross_encoder_rerank(state["question"], hits, settings.rerank_k * 2)
+        reranked = cross_encoder_rerank(
+            state["question"], hits, settings.rerank_k * 2, enabled=self.config.rerank
+        )
         tracer.span("rerank", f"in={len(hits)} out={len(reranked)}")
         return {"hits": reranked or hits[: settings.rerank_k * 2]}
 
@@ -203,6 +255,9 @@ class Pipeline:
         if not hits:
             tracer.span("grade", "empty")
             return {"grade": "insufficient"}
+        if not self.config.grade:
+            tracer.span("grade", "disabled")
+            return {"grade": "sufficient", "hits": hits[: settings.rerank_k]}
         if not llm_configured():
             tracer.span("grade", "heuristic sufficient")
             return {"grade": "sufficient"}

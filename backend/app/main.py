@@ -80,14 +80,15 @@ async def lifespan(app: FastAPI):
     state.vectors.ensure()
     state.catalog = Catalog(state.redis)
     state.bm25 = BM25Index()
-    try:
-        state.bm25.rebuild(state.vectors.scroll_all())
-    except Exception:
-        log.warning("bm25.rebuild_skipped")
     state.queue = IndexQueue(state.redis)
     await state.queue.start()
     state.indexer = Indexer(state.cache, state.vectors, state.catalog, state.bm25)
     state.pipeline = Pipeline(state.cache, state.vectors, state.bm25)
+    try:
+        # Build the BM25 snapshot now so the first query does not pay for it.
+        await state.pipeline.warm()
+    except Exception:
+        log.warning("bm25.rebuild_skipped")
     if settings.embedded_worker:
         state.worker_task = asyncio.create_task(_consume_index_jobs())
     yield

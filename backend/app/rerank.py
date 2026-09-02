@@ -18,9 +18,20 @@ def _load_cross_encoder():
     return _cross_encoder
 
 
-def cross_encoder_rerank(question: str, hits: list[Hit], top_k: int | None = None) -> list[Hit]:
-    """RRF candidates → cross-encoder scores. Skipped when disabled or empty."""
-    if not hits or not settings.enable_cross_encoder:
+def cross_encoder_rerank(
+    question: str,
+    hits: list[Hit],
+    top_k: int | None = None,
+    enabled: bool | None = None,
+) -> list[Hit]:
+    """RRF candidates → cross-encoder scores. Skipped when disabled or empty.
+
+    `enabled` lets a caller override the global switch; the ablation harness
+    uses it to compare pipelines within one process.
+    """
+    if enabled is None:
+        enabled = settings.enable_cross_encoder
+    if not hits or not enabled:
         return hits[: top_k or settings.rerank_k]
     try:
         model = _load_cross_encoder()
