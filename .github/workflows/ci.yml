@@ -27,6 +27,12 @@ jobs:
       - name: Install backend
         working-directory: backend
         run: pip install -e ".[dev]"
+      # From the repo root: scripts/ imports from backend/app, and linting one
+      # without the other leaves the seam between them unchecked.
+      - name: Lint
+        run: ruff check .
+      - name: Format check
+        run: ruff format --check .
       - name: Pytest
         working-directory: backend
         run: pytest -q
@@ -60,6 +66,11 @@ jobs:
       REDIS_URL: redis://localhost:6379/0
       QDRANT_URL: http://localhost:6333
       SAMPLES_DIR: ../samples
+      ENABLE_CROSS_ENCODER: "false"
+      # Job level, not step level: a step's own env is not in scope for that
+      # step's `if`, which is why this gate silently skipped every run while
+      # the job reported success.
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -68,9 +79,13 @@ jobs:
       - name: Install backend
         working-directory: backend
         run: pip install -e ".[dev]"
+      - name: Announce whether the gate can run
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::warning::OPENAI_API_KEY is not set; the full eval gate is skipped."
+          else
+            echo "OPENAI_API_KEY present; running the full gate."
+          fi
       - name: Full eval gate
         if: env.OPENAI_API_KEY != ''
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ENABLE_CROSS_ENCODER: "false"
         run: python scripts/eval_gate.py --full
