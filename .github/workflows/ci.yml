@@ -33,6 +33,9 @@ jobs:
         run: ruff check .
       - name: Format check
         run: ruff format --check .
+      - name: Typecheck
+        working-directory: backend
+        run: mypy app
       - name: Pytest
         working-directory: backend
         run: pytest -q

@@ -556,9 +556,7 @@ class Pipeline:
                 "total_ms": tracer.total_ms,
                 "prompt_tokens": int(state.get("prompt_tokens") or 0),
                 "completion_tokens": int(state.get("completion_tokens") or 0),
-                "tokens_saved_vs_naive": int(
-                    state.get("tokens_saved_vs_naive") or state.get("tokens_saved") or 0
-                ),
+                "tokens_saved_vs_naive": int(state.get("tokens_saved") or 0),
                 "cache_hit": True,
                 "rewritten_query": state.get("rewritten_query"),
                 "faithfulness": state.get("faithfulness"),

@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     # The alias is load-bearing: without it pydantic-settings binds this field
     # to API_KEYS, silently ignores the ATLAS_API_KEYS the deployment sets, and
     # the service starts with auth off while looking configured.
-    api_keys: str = Field("", validation_alias="ATLAS_API_KEYS")
+    api_keys: str = Field(default="", validation_alias="ATLAS_API_KEYS")
     # 60 was a guess, and scripts/loadtest.py showed it was the binding
     # constraint long before the service was: one replica serves ~590 rps of
     # cached answers and ~1 rps once the model is in the path, so 60/min

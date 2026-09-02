@@ -54,7 +54,7 @@ class AppState:
     vectors: VectorStore
     catalog: Catalog
     bm25: BM25Index
-    qa_cache: QACache
+    qa_cache: QACache | None
     queue: IndexQueue
     pipeline: Pipeline
     indexer: Indexer

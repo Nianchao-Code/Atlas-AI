@@ -59,7 +59,8 @@ class IndexQueue:
 
     def __init__(self, client: redis.Redis) -> None:
         self.r = client
-        self._kafka = None
+        # AIOKafkaProducer when a broker is configured; the import is optional.
+        self._kafka: Any | None = None
 
     async def start(self) -> None:
         if settings.kafka_brokers:
