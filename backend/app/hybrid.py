@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 
 from rank_bm25 import BM25Okapi
 
@@ -14,29 +15,48 @@ def tokenize(text: str) -> list[str]:
     return [t.lower() for t in _TOKEN.findall(text or "")]
 
 
+@dataclass(frozen=True)
+class _Snapshot:
+    """One coherent view of the corpus: ids, payloads, and the scorer built
+    from exactly those ids, in that order."""
+
+    ids: list[str]
+    hits: dict[str, Hit]
+    bm25: BM25Okapi | None
+
+
 class BM25Index:
+    """Read-mostly index published by a single assignment.
+
+    rebuild() now runs in a worker thread while queries are being served, so
+    the new state is assembled off to the side and swapped in one rebinding.
+    Assigning ids, payloads and scorer one field at a time let a concurrent
+    search pair fresh ids with a stale scorer: a KeyError if it was lucky,
+    silently mismatched hits if it was not.
+    """
+
     def __init__(self) -> None:
-        self._ids: list[str] = []
-        self._hits: dict[str, Hit] = {}
-        self._corpus: list[list[str]] = []
-        self._bm25: BM25Okapi | None = None
+        self._snap = _Snapshot(ids=[], hits={}, bm25=None)
 
     def rebuild(self, hits: list[Hit]) -> None:
-        self._hits = {h.chunk_id: h for h in hits}
-        self._ids = [h.chunk_id for h in hits]
-        self._corpus = [tokenize(h.text) for h in hits]
-        self._bm25 = BM25Okapi(self._corpus) if self._corpus else None
+        corpus = [tokenize(h.text) for h in hits]
+        self._snap = _Snapshot(
+            ids=[h.chunk_id for h in hits],
+            hits={h.chunk_id: h for h in hits},
+            bm25=BM25Okapi(corpus) if corpus else None,
+        )
 
     def search(self, query: str, k: int) -> list[Hit]:
-        if not self._bm25 or not self._ids:
+        snap = self._snap  # one read; a swap mid-search cannot split this view
+        if not snap.bm25 or not snap.ids:
             return []
-        scores = self._bm25.get_scores(tokenize(query))
+        scores = snap.bm25.get_scores(tokenize(query))
         ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)[:k]
         out: list[Hit] = []
         for i, score in ranked:
             if score <= 0:
                 continue
-            base = self._hits[self._ids[i]]
+            base = snap.hits[snap.ids[i]]
             out.append(
                 Hit(
                     chunk_id=base.chunk_id,
