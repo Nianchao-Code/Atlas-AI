@@ -1,7 +1,8 @@
 # Deploy Atlas AI to a local Kubernetes cluster (Docker Desktop / minikube / kind).
 param(
   [string]$OpenAIKey = $env:OPENAI_API_KEY,
-  [string]$Tag = (Get-Date -Format "yyyyMMdd-HHmmss")
+  [string]$Tag = (Get-Date -Format "yyyyMMdd-HHmmss"),
+  [switch]$RotateApiKey
 )
 
 $ErrorActionPreference = "Continue"
@@ -82,6 +83,23 @@ if ($OpenAIKey) {
     --from-literal=OPENAI_API_KEY=$OpenAIKey `
     -n atlas `
     --dry-run=client -o yaml | kubectl apply -f -
+}
+
+# Generate an API key once and then leave it alone. Rotating it on every deploy
+# would log every caller out for no reason, so only create the secret when it
+# is absent -- or when -RotateApiKey says to.
+$authExists = kubectl get secret atlas-auth -n atlas -o name 2>$null
+if ($RotateApiKey -or -not $authExists) {
+  $key = -join ((48..57) + (97..122) | Get-Random -Count 40 | ForEach-Object { [char]$_ })
+  kubectl create secret generic atlas-auth `
+    --from-literal=ATLAS_API_KEYS="frontend:$key" `
+    --from-literal=ATLAS_FRONTEND_KEY=$key `
+    -n atlas `
+    --dry-run=client -o yaml | kubectl apply -f -
+  Write-Host "API auth enabled. Read the key with:" -ForegroundColor Green
+  Write-Host "  kubectl get secret atlas-auth -n atlas -o jsonpath='{.data.ATLAS_FRONTEND_KEY}' | base64 -d"
+} else {
+  Write-Host "Keeping existing atlas-auth secret (pass -RotateApiKey to replace it)."
 }
 
 if ($imported) {

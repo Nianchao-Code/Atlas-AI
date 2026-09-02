@@ -153,6 +153,12 @@ spec:
           env:
             - name: OPENAI_API_KEY
               valueFrom: { secretKeyRef: { name: atlas-llm, key: OPENAI_API_KEY } }
+            - name: ATLAS_API_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: atlas-auth
+                  key: ATLAS_API_KEYS
+                  optional: true
           # Headroom for the cross-encoder (PyTorch) when it is enabled. The
           # limit matters more than the request: without one, a model load can
           # take the whole node down instead of just this pod.
@@ -214,6 +220,12 @@ spec:
               valueFrom: { secretKeyRef: { name: atlas-llm, key: OPENAI_API_KEY } }
             - name: WORKER_ID
               value: atlas-worker
+            - name: ATLAS_API_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: atlas-auth
+                  key: ATLAS_API_KEYS
+                  optional: true
           resources:
             requests: { memory: 512Mi, cpu: 200m }
             limits: { memory: 2Gi, cpu: "2" }
@@ -254,6 +266,13 @@ spec:
         - name: frontend
           image: atlas-frontend:latest
           imagePullPolicy: IfNotPresent
+          env:
+            - name: ATLAS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: atlas-auth
+                  key: ATLAS_FRONTEND_KEY
+                  optional: true
           resources:
             requests: { memory: 32Mi, cpu: 10m }
             limits: { memory: 128Mi, cpu: 500m }

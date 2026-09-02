@@ -1,0 +1,24 @@
+server {
+  listen 80;
+
+  location /api/ {
+    proxy_pass http://api:8000/api/;
+    # The key is injected here, server side. A browser SPA cannot hold a
+    # secret, so the browser never sees one: it calls a same-origin path and
+    # nginx presents the credential. This authenticates the frontend to the
+    # API; it is not user identity, and the Limits section says so.
+    proxy_set_header X-API-Key "${ATLAS_API_KEY}";
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
+    proxy_buffering off;
+  }
+
+  location /health {
+    proxy_pass http://api:8000/health;
+  }
+
+  location / {
+    root /usr/share/nginx/html;
+    try_files $uri /index.html;
+  }
+}
