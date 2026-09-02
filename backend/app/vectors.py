@@ -152,6 +152,29 @@ class VectorStore:
             ),
         )
 
+    def doc_ids(self) -> set[str]:
+        """Every doc_id holding at least one vector, for reconciling with Redis.
+
+        Scrolls only the doc_id field: the payloads carry whole passages, and
+        this runs over the entire collection.
+        """
+        seen: set[str] = set()
+        offset = None
+        while True:
+            records, offset = self.client.scroll(
+                collection_name=self.collection,
+                limit=1024,
+                offset=offset,
+                with_payload=["doc_id"],
+                with_vectors=False,
+            )
+            for p in records:
+                doc_id = (p.payload or {}).get("doc_id")
+                if doc_id:
+                    seen.add(str(doc_id))
+            if offset is None:
+                return seen
+
     def count(self) -> int:
         return int(self.client.count(self.collection, exact=True).count)
 

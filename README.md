@@ -26,7 +26,7 @@ the [ablation](#what-each-stage-actually-buys) is why. Recorded by
 | **Quality** | 53-question golden set tagged by failure mode — recall, precision, faithfulness, correctness, hallucination rate, abstention accuracy, plus a stage-by-stage ablation |
 | **Safety** | API-key auth with per-principal cache isolation and rate limiting; injection resistance measured across 17 attacks and four defense configurations, not asserted; upload path hardened against traversal, oversized bodies and unreadable types |
 | **Ops** | 521MB image running as a non-root uid; horizontally scalable — no retrieval state in process memory; load-tested to a measured ceiling (592 rps cached, no head-of-line blocking); Prometheus metrics from every process; retrieval p50/p95 separate from end-to-end latency; Redis embedding + semantic QA cache |
-| **Ingest** | Async worker queue (Redis Streams locally, Kafka/Redpanda in production); uploads streamed to disk under a byte budget, parsing and index rebuilds off the event loop |
+| **Ingest** | Async worker queue (Redis Streams locally, Kafka/Redpanda in production); uploads streamed to disk under a byte budget, parsing off the event loop; catalogue and vector store reconciled at startup and on demand |
 
 ## What the measurements said
 
@@ -81,6 +81,13 @@ unflattering. Those are the ones worth reading first.
   writable, because the non-root uid owns `/app`. Verified against the running
   pod. Every claim on this page was about the query path; nobody had pointed
   one at the half of the service that takes files.
+
+- **[A known gap is not a handled one.](#keeping-redis-and-qdrant-in-agreement)**
+  "Redis and Qdrant can diverge" sat in Limits for weeks. Then a collection
+  rebuild dropped every vector while the catalogue kept listing eight ready
+  documents: the UI showed a healthy corpus and every question abstained.
+  Reconciliation now runs at startup and on demand, and a probe verifies it by
+  causing both kinds of divergence on purpose.
 
 - **Three features shipped silently inert, and none of them failed.** API auth
   was disabled because pydantic-settings bound the field to `API_KEYS` while
@@ -198,6 +205,7 @@ Every `/api/v1` route requires an API key (see [Auth](#auth)); `/health` does no
 | `POST` | `/api/v1/eval` | Run offline golden-set eval |
 | `GET` | `/api/v1/metrics` | SLI snapshot (latency, cache, tokens) |
 | `POST` | `/api/v1/documents/seed` | Load sample handbook |
+| `POST` | `/api/v1/documents/reconcile` | Repair catalogue/vector disagreement; `?dry_run=true` reports only ([why](#keeping-redis-and-qdrant-in-agreement)) |
 | `POST` | `/api/v1/documents` | Upload md / txt / pdf — `415` on other types, `413` over `MAX_UPLOAD_BYTES` (20MiB), `400` if the filename cannot be made safe ([why](#the-ingest-path)) |
 | `DELETE` | `/api/v1/documents/{id}` | Remove a document |
 
@@ -406,6 +414,13 @@ What is exported, and the reasoning behind the shape:
   ran retrieval, and a near-zero sample would drag p95 down and hide real work.
 - **`atlas_faithfulness_score`** — bucketed at 0.7, because that is the serving
   gate. The bucket below it is the regenerate-or-abstain rate.
+- **`atlas_reconcile_actions_total{action}`** — `requeued`, `marked_failed`,
+  `orphans_deleted`. A steady zero is the expected reading; anything else means
+  the two stores drifted and says which way.
+- **`atlas_upload_rejections_total{reason}`** — the HTTP status, not the
+  filename: `400` is a traversal attempt, `413` an oversized body, `415` a type
+  the parser cannot read. Labelling the filename would put attacker-controlled
+  text into the metric namespace.
 - **`atlas_rate_limited_total{principal}`** — the only series carrying an
   identity, because knowing who is being throttled is the entire point and the
   label space is bounded by the configured keys. Nothing else is labelled by
@@ -671,6 +686,62 @@ replicas: 2
   sparse  agree   7 chunks, top=['seed-02-leave:1', 'seed-06-seattle:1']
 ```
 
+## Keeping Redis and Qdrant in agreement
+
+The catalogue lives in Redis and the vectors live in Qdrant, and nothing makes
+a write to one atomic with a write to the other. That was in [Limits](#limits)
+for a long time as a known gap with nothing done about it. Then
+[the sparse migration](#the-sparse-index-moved-into-qdrant) made it real: the
+collection had to be rebuilt to gain a sparse vector, which dropped every
+point, while Redis went on listing eight ready documents. **The UI showed a
+healthy corpus and every question abstained.** A gap you have written down is
+still a gap.
+
+The two directions are not symmetric, and neither repair is "delete the other
+side":
+
+| | What it is | Repair |
+| --- | --- | --- |
+| Catalogue without vectors | Listed, unanswerable | Index it again — if the source is still on disk |
+| ...and the source is gone | An upload that outlived the `emptyDir` holding it | Mark it `failed`, so it stops claiming to be ready |
+| Vectors without a catalogue | A delete that got half done | Delete the points |
+
+The middle row is the one worth arguing about. Marking a document failed is a
+worse-looking outcome than leaving it alone, and it is the right one: a record
+that says `ready` while every question about it abstains is a lie the UI
+repeats. Documents that are `queued` or `indexing` are skipped — those have no
+vectors *yet*, which is not the same thing.
+
+Reconciliation runs at startup (that is when a collection gets rebuilt, so that
+is when the stores are most likely to disagree), on a slow timer, and on
+`POST /api/v1/documents/reconcile`, which takes `?dry_run=true` and reports
+without touching anything. There is no fast timer on purpose: the sweep scrolls
+the whole collection, which is the shape of work the last change went to some
+trouble to get off the hot path. Divergence comes from events — a failed
+ingest, a migration — not from drift.
+
+**Verified by causing it.** `scripts/reconcile_probe.py` injures both stores on
+purpose and checks the repair. Neither injury needs the embedding API — the
+orphan carries a made-up vector, the phantom record needs no vector at all — so
+it runs against the deployed stack regardless of what the model account is
+doing:
+
+```
+start        27 points, 8 catalogue records
+injured      one orphan point (ghost-probe), one unretrievable record (phantom-probe)
+dry run      {"requeued": [], "marked_failed": ["phantom-probe"], "orphans_deleted": ["ghost-probe"], "clean": false}
+repaired     {"requeued": [], "marked_failed": ["phantom-probe"], "orphans_deleted": ["ghost-probe"], "clean": false}
+points       28 -> 27, expected 27
+phantom      status=failed error=source_missing
+settled      a second pass reports clean: True
+PASS
+```
+
+The requeue path is covered by unit tests but not by this probe: re-indexing
+calls the embedding API, and the account behind it is out of credits. That half
+is asserted, not observed, and this line is here so nobody reads the `PASS`
+above as covering it.
+
 ## Throughput
 
 `scripts/loadtest.py` drives one replica from inside the cluster. It runs
@@ -763,10 +834,13 @@ fetch on the first request — about 12s, and egress the cluster may not have �
 so the weights would need baking into the image first. That work is not worth
 doing until a corpus exists where the reranker earns it.
 
-**Redis and Qdrant can still diverge.** Redis holds the document catalogue and
-now runs with AOF on a PVC, so a restart no longer empties it. There is still
-no reconciliation job: if the two stores disagree, uploaded documents can leave
-orphaned vectors that nothing points at.
+**A document whose source is gone cannot be recovered.** Redis holds the
+catalogue and runs with AOF on a PVC, so a restart no longer empties it, and
+[reconciliation](#keeping-redis-and-qdrant-in-agreement) repairs the two stores
+when they disagree. What it cannot do is re-index an upload whose bytes died
+with the pod's `emptyDir`; those are marked `failed` rather than silently left
+listed. A persistent volume for uploads is the fix, and it is not there because
+the demo corpus is seeded from a ConfigMap.
 
 ## Sample corpus
 

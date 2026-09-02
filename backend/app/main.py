@@ -40,6 +40,7 @@ from app.metrics import (
 from app.models import DocumentRecord, MetricsSnapshot, QueryRequest, QueryResponse
 from app.obs import Cache, obs
 from app.qa_cache import QACache
+from app.reconcile import reconcile
 from app.redis_client import create_redis
 from app.startup import await_dependency
 from app.store_docs import Catalog, IndexQueue
@@ -79,7 +80,9 @@ async def _background_refresh() -> None:
     retrieval now lives in Qdrant and is current the moment a write lands.
     """
     ticks = 0
-    sweep_every = max(1, int(60 / max(settings.refresh_seconds, 0.1)))
+    tick = max(settings.refresh_seconds, 0.1)
+    sweep_every = max(1, int(60 / tick))
+    reconcile_every = int(settings.reconcile_seconds / tick) if settings.reconcile_seconds else 0
     while True:
         await asyncio.sleep(settings.refresh_seconds)
         ticks += 1
@@ -88,6 +91,8 @@ async def _background_refresh() -> None:
             set_corpus_size(documents, chunks)
             if state.qa_cache is not None and ticks % sweep_every == 0:
                 await asyncio.to_thread(state.qa_cache.purge_expired)
+            if reconcile_every and ticks % reconcile_every == 0:
+                await reconcile(state.catalog, state.vectors, state.queue)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -172,6 +177,13 @@ async def lifespan(app: FastAPI):
     await state.queue.start()
     state.indexer = Indexer(state.cache, state.vectors, state.catalog)
     state.pipeline = Pipeline(state.cache, state.vectors, qa_cache=state.qa_cache)
+    try:
+        # Before serving, not after: startup is when the two stores are most
+        # likely to disagree, because that is when a collection gets rebuilt.
+        await reconcile(state.catalog, state.vectors, state.queue)
+    except Exception:
+        # A reconciler that cannot run is not a reason to refuse to serve.
+        log.exception("reconcile.failed_at_startup")
     state.refresh_task = asyncio.create_task(_background_refresh())
     if settings.embedded_worker:
         state.worker_task = asyncio.create_task(_consume_index_jobs())
@@ -340,6 +352,26 @@ async def prometheus_metrics():
     """
     payload, content_type = render_metrics()
     return Response(content=payload, media_type=content_type)
+
+
+@app.post("/api/v1/documents/reconcile")
+async def reconcile_now(s: StateDep, principal: PrincipalDep, dry_run: bool = False):
+    """Repair disagreement between the catalogue and the vector store.
+
+    Also runs at startup and on a slow timer; this exists so the state can be
+    inspected and fixed without waiting for either, which is what the demo
+    needs after a collection rebuild.
+    """
+    report = await reconcile(s.catalog, s.vectors, s.queue, dry_run=dry_run)
+    return {
+        "dry_run": dry_run,
+        "checked": report.checked,
+        "skipped_in_flight": report.skipped_in_flight,
+        "requeued": report.requeued,
+        "marked_failed": report.marked_failed,
+        "orphans_deleted": report.orphans_deleted,
+        "clean": report.clean,
+    }
 
 
 @app.get("/api/v1/metrics", response_model=MetricsSnapshot)

@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     # paraphrase-cache sweep. Retrieval no longer waits on this -- dense and
     # sparse both live in Qdrant and are current as soon as a write lands.
     refresh_seconds: float = 2.0
+    # How often to check that the catalogue and the vector store still agree.
+    # It scrolls the whole collection, so it is deliberately slow and runs in a
+    # thread; 0 leaves reconciliation to startup and the endpoint. Divergence
+    # comes from events -- a failed ingest, a migration -- rather than drift,
+    # so this is insurance, not the mechanism.
+    reconcile_seconds: float = 300.0
     # Port the worker exposes its scrape endpoint on. The API serves /metrics
     # from its own FastAPI app and ignores this. 0 disables.
     metrics_port: int = 9100

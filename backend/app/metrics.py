@@ -63,6 +63,15 @@ UPLOAD_REJECTIONS = Counter(
     ["reason"],
 )
 
+RECONCILE_ACTIONS = Counter(
+    "atlas_reconcile_actions_total",
+    "Repairs made where the catalogue and the vector store disagreed",
+    # requeued: listed but unretrievable, source still on disk.
+    # marked_failed: listed but unretrievable and unrecoverable.
+    # orphans_deleted: vectors for a document the catalogue no longer has.
+    ["action"],
+)
+
 RATE_LIMITED = Counter(
     "atlas_rate_limited_total",
     "Requests refused because the principal exhausted its window",
