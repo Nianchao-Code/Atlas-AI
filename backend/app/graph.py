@@ -240,7 +240,8 @@ class Pipeline:
         a p95. Serving does not call this at all any more -- main.py warms once
         at startup and then refreshes on a timer.
         """
-        rev = await self.cache.r.get("bm25:rev")
+        raw_rev = await self.cache.r.get("bm25:rev")
+        rev = raw_rev.decode() if isinstance(raw_rev, bytes) else raw_rev
         if rev == self._bm25_rev:
             return False
         async with self._warm_lock:

@@ -123,7 +123,9 @@ class IndexQueue:
         except redis.ResponseError:
             pass
 
-        resp = await self.r.xreadgroup(
+        # Annotated loosely on purpose: the declared return type does not
+        # describe the [[stream, [(id, fields)]]] shape redis actually sends.
+        resp: Any = await self.r.xreadgroup(
             "indexers",
             consumer,
             {settings.index_stream: ">"},
