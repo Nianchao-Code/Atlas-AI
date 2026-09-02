@@ -23,7 +23,7 @@ the [ablation](#what-each-stage-actually-buys) is why. Recorded by
 | **Orchestration** | LangGraph: guard → cache → rewrite → retrieve → rerank → grade → compress → generate → faithfulness |
 | **Quality** | 53-question golden set tagged by failure mode — recall, precision, faithfulness, correctness, hallucination rate, abstention accuracy, plus a stage-by-stage ablation |
 | **Safety** | API-key auth with per-principal cache isolation and rate limiting; user prompt-injection blocking + indirect corpus injection handling (`08-injection-bait.md`) |
-| **Ops** | Retrieval p50/p95 separate from end-to-end latency; Redis embedding + semantic QA cache |
+| **Ops** | Prometheus metrics from every process; retrieval p50/p95 separate from end-to-end latency; Redis embedding + semantic QA cache |
 | **Ingest** | Async worker queue (Redis Streams locally, Kafka/Redpanda in production) |
 
 ## Architecture
@@ -117,6 +117,7 @@ Every `/api/v1` route requires an API key (see [Auth](#auth)); `/health` does no
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/health` | Liveness, plus whether auth and an LLM are configured |
+| `GET` | `/metrics` | Prometheus scrape (no key; not proxied to the browser) |
 | `POST` | `/api/v1/query` | Run the RAG graph (non-streaming) |
 | `POST` | `/api/v1/query/stream` | Same graph, streams answer tokens via SSE |
 | `POST` | `/api/v1/eval` | Run offline golden-set eval |
@@ -270,6 +271,45 @@ no reason. Pass `-RotateApiKey` to replace it:
 kubectl get secret atlas-auth -n atlas -o jsonpath='{.data.ATLAS_FRONTEND_KEY}' | base64 -d
 ```
 
+## Observability
+
+Two endpoints, easy to confuse:
+
+| Path | Auth | Purpose |
+| --- | --- | --- |
+| `/metrics` | none | Prometheus scrape, in-cluster only |
+| `/api/v1/metrics` | API key | JSON snapshot for this replica, drives the SLI tab |
+
+`/metrics` is unauthenticated on purpose: nginx does not proxy it, so it is
+reachable only from inside the cluster, where the scraper lives and where a key
+would be one more secret to distribute for nothing.
+
+**Both processes are scrape targets.** The worker serves no HTTP of its own, so
+it runs a listener on `:9100` purely to be scraped — without it, index
+throughput and failures are invisible. Discovery is by pod annotation rather
+than a `ServiceMonitor`, since that needs the Prometheus Operator. Aggregation
+is Prometheus's job; each process only reports itself. An ingest bumps
+`atlas_index_jobs_total` on the worker and leaves the API's copy at zero, which
+is exactly the split that made a single in-process counter the wrong shape.
+
+What is exported, and the reasoning behind the shape:
+
+- **`atlas_queries_total{outcome}`** — `answered`, `abstained`, `cached`,
+  `blocked`. A cache hit is its own outcome; folding it into `answered` hides
+  the hit rate inside the query rate, which is the number worth watching when
+  the cache changes.
+- **`atlas_retrieval_seconds`** — a cache hit records nothing here. It never
+  ran retrieval, and a near-zero sample would drag p95 down and hide real work.
+- **`atlas_faithfulness_score`** — bucketed at 0.7, because that is the serving
+  gate. The bucket below it is the regenerate-or-abstain rate.
+- **`atlas_rate_limited_total{principal}`** — the only series carrying an
+  identity, because knowing who is being throttled is the entire point and the
+  label space is bounded by the configured keys. Nothing else is labelled by
+  principal: an identity in a label outlives the request in dashboards and long
+  term storage, for a breakdown nobody reads.
+
+No series carries question or answer text, and a test enforces it.
+
 ## Limits
 
 Measured and known, not hidden. Each of these is a deliberate stopping point
@@ -293,9 +333,11 @@ whole corpus for itself. Past a few tens of thousands of chunks the sparse
 index belongs in Qdrant alongside the dense one, which removes the per-process
 copy entirely.
 
-**`/api/v1/metrics` is per-process.** With more than one replica each pod
-reports only its own traffic. Horizontal scaling needs the counters exported to
-Prometheus rather than summarised in the app.
+**The JSON SLI snapshot is still per-process.** `/api/v1/metrics` drives the
+UI and reports the replica that served the request, so with more than one it
+shows a slice rather than the system. The Prometheus endpoint is the answer for
+anything that has to be true across replicas; the JSON one stays because a demo
+should show numbers without asking you to stand up a scraper first.
 
 **Auth is service-level, not user identity.** Every `/api/v1` route requires
 an API key mapped to a named principal, and the semantic cache and rate limit
