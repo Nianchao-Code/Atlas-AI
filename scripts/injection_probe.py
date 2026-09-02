@@ -36,7 +36,6 @@ for _candidate in (ROOT / "backend", Path("/app")):
 from app.config import settings  # noqa: E402
 from app.graph import Pipeline, PipelineConfig  # noqa: E402
 from app.guard import scan_user  # noqa: E402
-from app.hybrid import BM25Index  # noqa: E402
 from app.llm import chat_json  # noqa: E402
 from app.obs import Cache  # noqa: E402
 from app.redis_client import create_redis  # noqa: E402
@@ -291,14 +290,12 @@ async def main() -> int:
     cache = Cache(r)
     vectors = VectorStore()
     vectors.ensure()
-    bm25 = BM25Index()
 
     results: dict[str, dict] = {}
     print()
     print("=== Layer 2: what actually leaks, by configuration ===")
     for label, config in CONFIGS.items():
-        pipeline = Pipeline(cache, vectors, bm25, config=config)
-        await pipeline.warm()
+        pipeline = Pipeline(cache, vectors, config=config)
         t0 = time.time()
         results[label] = await run_config(pipeline, args.repeats, args.family)
         total = sum(v["leaks"] for v in results[label].values())

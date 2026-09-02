@@ -7,7 +7,9 @@ Production RAG platform for internal handbook Q&A. Hybrid retrieval, a correctiv
 ![Atlas answering a handbook question, with the graph trace and cited sources filling in as the pipeline runs](docs/demo.gif)
 
 One question against the deployed stack, uncut: guard, a cache miss, query
-rewrite, hybrid retrieval (`dense=24 bm25=12 rrf=24`), the rerank node cutting
+rewrite, hybrid retrieval (recorded before fusion moved into Qdrant, so the
+trace reads `dense=24 bm25=12 rrf=24` where it now reads
+`dense+sparse rrf=24`), the rerank node cutting
 24 candidates to 12, LLM grading, parent-passage packing, a streamed answer,
 and the faithfulness gate scoring it 1.00 — 3.9s end to end. The cross-encoder
 is off in this deployment, so that step is a truncation rather than a rerank;
@@ -18,12 +20,12 @@ the [ablation](#what-each-stage-actually-buys) is why. Recorded by
 
 | Area | Implementation |
 | --- | --- |
-| **Retrieval** | Parent-child chunking, BM25 + dense RRF, cross-encoder rerank, LLM document grading |
+| **Retrieval** | Parent-child chunking, dense + sparse vectors in one Qdrant collection fused server-side by RRF, cross-encoder rerank, LLM document grading |
 | **Generation** | SSE streaming answers; token-budget packing on deduplicated parent passages |
 | **Orchestration** | LangGraph: guard → cache → rewrite → retrieve → rerank → grade → compress → generate → faithfulness |
 | **Quality** | 53-question golden set tagged by failure mode — recall, precision, faithfulness, correctness, hallucination rate, abstention accuracy, plus a stage-by-stage ablation |
 | **Safety** | API-key auth with per-principal cache isolation and rate limiting; injection resistance measured across 17 attacks and four defense configurations, not asserted; upload path hardened against traversal, oversized bodies and unreadable types |
-| **Ops** | 521MB image running as a non-root uid; load-tested to a measured ceiling (592 rps cached, no head-of-line blocking); Prometheus metrics from every process; retrieval p50/p95 separate from end-to-end latency; Redis embedding + semantic QA cache |
+| **Ops** | 521MB image running as a non-root uid; horizontally scalable — no retrieval state in process memory; load-tested to a measured ceiling (592 rps cached, no head-of-line blocking); Prometheus metrics from every process; retrieval p50/p95 separate from end-to-end latency; Redis embedding + semantic QA cache |
 | **Ingest** | Async worker queue (Redis Streams locally, Kafka/Redpanda in production); uploads streamed to disk under a byte budget, parsing and index rebuilds off the event loop |
 
 ## What the measurements said
@@ -32,10 +34,24 @@ Every claim above has a number behind it, and several of those numbers are
 unflattering. Those are the ones worth reading first.
 
 - **[Hybrid retrieval and the cross-encoder buy nothing on this corpus.](#what-each-stage-actually-buys)**
-  Dense alone scores higher than dense fused with BM25. The cross-encoder moves
-  correctness by zero and adds latency, so it is off in the deployed config.
-  Query rewrite looked worth +3.5pp on 14 questions and worth exactly nothing
-  on 53 — the clearest argument here for sizing an eval set before trusting it.
+  Fusing sparse into dense matches dense on correctness and costs context
+  precision. The cross-encoder moves correctness by zero and adds latency, so
+  it is off in the deployed config. Query rewrite looked worth +3.5pp on 14
+  questions and worth exactly nothing on 53 — the clearest argument here for
+  sizing an eval set before trusting it.
+
+- **[A whole subsystem existed to coordinate state that did not need to
+  exist.](#the-sparse-index-moved-into-qdrant)** Sparse retrieval was an
+  in-process index rebuilt by every replica, kept in step by a revision counter,
+  a poller, a rebuild thread and an atomically swapped snapshot. Moving the
+  vectors into Qdrant deleted all of it — and retrieved *better* than the
+  library it replaced, sparse-only correctness 0.863 → 0.906.
+
+- **[The harness could not resolve the differences it was being read
+  for.](#the-sparse-index-moved-into-qdrant)** Two configurations that were the
+  same pipeline reported 0.925 and 0.906. That put a number on the noise floor,
+  1.9pp — one question of 53 — and retracted an earlier finding that was exactly
+  1.9pp. Every table now carries a control row so the floor is always visible.
 
 - **[The paraphrase cache had never served a hit.](#caching)** It stored the
   embedding of the rewritten query and looked up with the raw question, so the
@@ -56,8 +72,8 @@ unflattering. Those are the ones worth reading first.
 
 - **[No head-of-line blocking under load.](#throughput)** Not one of 2,360
   concurrent requests crossed 100ms while a 5.2-second request was in flight —
-  the evidence that moving the BM25 rebuild off the event loop did what it
-  claimed.
+  the evidence that moving the sparse rebuild off the event loop did what it
+  claimed. That rebuild has since been deleted outright.
 
 - **[The upload endpoint let a caller write to the application's own source.](#the-ingest-path)**
   `filename` came from the client and was joined onto the upload directory
@@ -79,15 +95,14 @@ unflattering. Those are the ones worth reading first.
 flowchart TD
     U["Upload or seed"] --> Q[("Redis Streams<br/>Kafka in production")]
     Q --> W["Worker: chunk, embed, index"]
-    W --> QD[("Qdrant chunks")]
-    W -. "bumps bm25:rev" .-> BR["API rebuilds its BM25<br/>snapshot on a background tick"]
+    W --> QD[("Qdrant chunks<br/>dense + sparse vectors")]
 
     A(["Question"]) --> G{"guard"}
     G -- "injection pattern" --> X["refuse"]
     G --> C{"cache"}
     C -- "exact or paraphrase hit" --> DONE(["answer + citations"])
     C -- "miss" --> RW["rewrite + HyDE"]
-    RW --> RT["retrieve: dense + BM25, fused by RRF"]
+    RW --> RT["retrieve: dense + sparse,<br/>fused by RRF inside Qdrant"]
     QD -.-> RT
     RT --> RR["rerank"]
     RR --> GR{"graded sufficient?"}
@@ -115,11 +130,11 @@ rebuilds its sparse index on a background tick rather than inside a request.
 ## Design decisions
 
 - **Parent-child chunks** — children for search, parents for generation. Fewer, coherent context blocks instead of stuffing raw top-k snippets.
-- **Hybrid + RRF + cross-encoder** — RRF fuses dense and BM25; a small cross-encoder reranks the top candidates before the LLM grader.
+- **Hybrid + RRF + cross-encoder** — dense and sparse vectors sit in one Qdrant collection and are fused there by RRF; a small cross-encoder reranks the top candidates before the LLM grader.
 - **Corrective graph, not multi-agent** — one stateful graph that rewrites bad retrieval and abstains on thin evidence.
 - **Faithfulness as a serving gate** — scores below 0.7 trigger one regeneration, then abstain. Hallucination control is enforced, not only measured offline.
 - **Eval set is part of the product** — graph and chunking changes should pass the golden set before shipping.
-- **Single vector store** — Qdrant for dense search and payload filters. Handbook Q&A does not need GraphRAG or a second index.
+- **Single vector store** — Qdrant holds the dense vectors, the sparse ones and the payload filters, and computes IDF across the collection. Handbook Q&A does not need GraphRAG, and the sparse side does not need a second index to keep in step with the first.
 
 These are design intentions. [What each stage actually buys](#what-each-stage-actually-buys)
 measures them, and on the current corpus it does not vindicate all of them —
@@ -155,7 +170,7 @@ npm run dev
 
 Open http://127.0.0.1:5173 → **Corpus → Load Kepler sample handbook** → **Ask** → **Eval**.
 
-Without an API key the system still indexes and BM25-retrieves; generation falls back to extracts. LLM-as-judge metrics degrade to keyword overlap.
+Without an API key the system still indexes and retrieves; generation falls back to extracts. LLM-as-judge metrics degrade to keyword overlap.
 
 Full stack (API + worker + frontend):
 
@@ -232,22 +247,40 @@ the set had at the time; there are now seven.
 pipelines. Each row adds exactly one stage, so a delta belongs to that stage
 and nothing else.
 
+**Retrieval, re-measured on the Qdrant sparse index:**
+
 | Configuration | Recall | Ctx precision | Faithful | Correct | Halluc. | p95 ms | Tokens |
 |---|---|---|---|---|---|---|---|
-| **Dense only** | 1.000 ±0.000 | 0.508 ±0.002 | 0.981 ±0.000 | **0.925** ±0.000 | 0.000 | 1392 ±1469 | 961 |
-| **BM25 only** | 1.000 ±0.000 | 0.403 ±0.002 | 0.977 ±0.000 | 0.863 ±0.007 | 0.000 | 304 ±8 | 942 ±7 |
-| **Hybrid + RRF** | 1.000 ±0.000 | 0.434 ±0.000 | 0.980 ±0.001 | 0.906 ±0.000 | 0.000 | 485 ±93 | 990 |
+| **Dense only** | 1.000 ±0.000 | **0.502** ±0.002 | 0.981 ±0.000 | **0.925** ±0.000 | 0.000 ±0.000 | 674 ±485 | 1022 ±9 |
+| **Sparse only** | 1.000 ±0.000 | 0.425 ±0.002 | 0.981 ±0.000 | 0.906 ±0.000 | 0.000 ±0.000 | 617 ±334 | 1036 ±0 |
+| **Hybrid + RRF** | 1.000 ±0.000 | 0.456 ±0.004 | 0.979 ±0.003 | **0.925** ±0.000 | 0.000 ±0.000 | 434 ±54 | 1075 ±12 |
+
+**Downstream stages, from the previous implementation:**
+
+| Configuration | Recall | Ctx precision | Faithful | Correct | Halluc. | p95 ms | Tokens |
+|---|---|---|---|---|---|---|---|
 | **+ cross-encoder** | 1.000 ±0.000 | 0.428 ±0.000 | 0.977 ±0.000 | 0.906 ±0.000 | 0.000 | 660 ±316 | 985 ±8 |
 | **+ LLM grading (full)** | 0.961 ±0.000 | **0.830** ±0.003 | 0.975 ±0.004 | 0.915 ±0.013 | 0.000 | 1024 ±336 | **232** ±5 |
 | **Full − query rewrite** | 0.961 ±0.000 | 0.830 ±0.003 | 0.975 ±0.001 | 0.915 ±0.013 | 0.000 | 1099 ±1159 | 232 ±5 |
 
+These three are carried over rather than re-run: the account the harness bills
+ran out of credits partway through the new run, and a stale number that says so
+beats a fresh number that is not there. The one partial re-run that did land
+before it stopped put the full pipeline at recall 0.961 / correctness 0.943,
+which is the same shape. They are due for re-measurement.
+
 53 questions, 2 runs per configuration, mean ±sd. Judge `gpt-4o-mini`,
 generation `gpt-4o`. Reproduce with `python scripts/ablation.py --repeats 2`.
+Note the ±sd is spread across repeats of one configuration and understates the
+harness's resolution: two *identical* configurations differed by 1.9pp, which
+is [where that number comes from](#the-sparse-index-moved-into-qdrant) and why
+the tables now carry a control row.
 
 Aggregates hide where the differences live, so the same runs by question type
-(answer correctness, one run):
+(answer correctness, one run). The sparse column is the previous
+implementation; the categories, not the column, are the point:
 
-| Category | n | Dense | BM25 | Full | What it stresses |
+| Category | n | Dense | Sparse | Full | What it stresses |
 |---|---|---|---|---|---|
 | `semantic` | 4 | **1.000** | **0.500** | 1.000 | paraphrased away from corpus wording |
 | `abstain` | 6 | 0.333 | 0.167 | **0.667** | document retrievable, fact absent from it |
@@ -262,11 +295,16 @@ Aggregates hide where the differences live, so the same runs by question type
 **What the measurements support:**
 
 - **Dense retrieval earns its place, on the strength of one category.** It ties
-  BM25 everywhere except `semantic`, where questions are deliberately worded
-  away from the corpus vocabulary and BM25 scores 0.500 against dense 1.000.
-- **BM25 and RRF do not.** Fusing BM25 into dense *lowers* overall correctness
-  (0.925 → 0.906) and context precision (0.508 → 0.434): the lexical hits
-  displace passages the dense ranker had already ordered correctly.
+  sparse everywhere except `semantic`, where questions are deliberately worded
+  away from the corpus vocabulary and sparse scores 0.500 against dense 1.000.
+- **Fusing sparse into dense buys precision, not correctness.** Hybrid matches
+  dense on correctness (0.925 both) and gives up context precision to do it
+  (0.502 → 0.456): the lexical hits displace passages the dense ranker had
+  already ordered correctly. An earlier version of this section said hybrid was
+  *worse* on correctness, 0.925 → 0.906. That gap is 1.9pp, which is one
+  question of 53 and exactly the harness's
+  [measured resolution floor](#the-sparse-index-moved-into-qdrant). It was
+  over-read, and it is retracted.
 - **The cross-encoder does nothing here.** Identical correctness to plain
   hybrid, marginally worse precision, and it adds latency. On this corpus it is
   pure cost, so it is off by default and its dependency is an optional extra:
@@ -288,7 +326,7 @@ Aggregates hide where the differences live, so the same runs by question type
   this repo for sizing an eval set before trusting it.
 
 **What the measurements do not support:** the `lexical` category was built to
-show BM25 winning on exact identifiers and it did not — dense retrieves
+show lexical search winning on exact identifiers and it did not — dense retrieves
 `KV-2025-441` and `IR-4` perfectly well at this corpus size. Recall is also
 saturated at 1.000 for every retriever, because `_hit` only requires one of the
 expected documents and there are only eight to choose from. Recall cannot
@@ -521,25 +559,117 @@ oddly should get their document, not an error. The catalogue and the citations
 keep the name they used; only the path on disk is rewritten.
 
 **The same event-loop rule the query path already follows.** `delete_doc`
-scrolled the whole corpus and rebuilt the BM25 index inline, and uploads parsed
-PDFs inline — synchronous O(corpus) work on the event loop, which is exactly
-what the [BM25 refactor](#throughput) exists to eliminate, left behind on the
-two endpoints that were never load-tested. Deletes now bump `bm25:rev` and let
-the background refresher rebuild in a thread, which is what indexing already
-did; parsing runs in a thread.
+scrolled the whole corpus and rebuilt the sparse index inline, and uploads
+parsed PDFs inline — synchronous O(corpus) work on the event loop, which is
+exactly what the [background refresher](#throughput) existed to prevent, left
+behind on the two endpoints that were never load-tested.
 
-Honest about the size of it: at this corpus that stall is **4.6ms** (4.1ms
-scroll, 0.4ms rebuild), and the rebuild alone is 13.7ms at 1080 chunks. It is
+Honest about the size of it: at that corpus the stall was **4.6ms** (4.1ms
+scroll, 0.4ms rebuild), and the rebuild alone 13.7ms at 1080 chunks. It is
 linear in the corpus, and it is the same work that put 19s into a p95 when it
 ran cold on the query path — but at 27 chunks it was never going to show up in
-a load test. The reason to fix it is that the rule should hold on every path,
+a load test. The reason to fix it was that the rule should hold on every path,
 not that this instance was expensive.
 
-A piece of dead work went with it. `Indexer` rebuilt a BM25 index that nothing
-in its own process ever searched: the worker answers no queries, and the API
-rebuilds from `bm25:rev` on a timer. Every ingest was paying for a full index
-build whose result was discarded — and in embedded mode, paying for it on the
-API's event loop.
+A piece of dead work went with it: `Indexer` rebuilt a sparse index that
+nothing in its own process ever searched. Both of these are now moot for a
+better reason — [the sparse index moved into Qdrant](#the-sparse-index-moved-into-qdrant),
+so there is no per-process index left to rebuild anywhere. Parsing still runs
+in a thread.
+
+## The sparse index moved into Qdrant
+
+[Limits](#limits) used to open with "runs as a single replica," and one
+subsystem was the reason. Sparse retrieval was an in-process `BM25Okapi`,
+rebuilt from the whole corpus by every process that answered queries. Keeping
+those copies in step took a `bm25:rev` counter in Redis, a background poller, a
+worker thread so the rebuild stayed off the event loop, and a frozen snapshot
+published in a single assignment so a concurrent search could not read a
+half-swapped index. Every one of those pieces existed to make one piece of
+mutable state agree across processes.
+
+Qdrant stores sparse vectors beside the dense ones, computes IDF across the
+collection itself, and fuses two rankings with RRF server-side. So the state
+could be deleted rather than coordinated.
+
+| | Before | After |
+| --- | --- | --- |
+| Sparse index | `BM25Okapi`, one per process | vectors on the same Qdrant points |
+| IDF | recomputed per process on every rebuild | Qdrant, across the collection |
+| Fusion | client-side RRF over two result lists | `Prefetch` + `FusionQuery(RRF)`, one round trip |
+| Keeping replicas in step | `bm25:rev`, a 2s poller, a rebuild thread, a snapshot swap | nothing |
+| A write becomes visible | dense at once, sparse up to one tick later | both at once |
+| Deleting a document | delete vectors, bump a counter, rebuild | delete the points |
+
+`hybrid.py`, `Pipeline.warm()`, `test_bm25_refresh.py` and the `rank-bm25`
+dependency all went with it.
+
+**It is TF-IDF, not BM25, and that was a choice.** Qdrant applies IDF; the
+values this code sends are the term-frequency half. BM25 adds saturation (`k1`)
+and length normalisation (`b`), and `b` needs a corpus average — a statistic
+that would have to be maintained somewhere and would restate every stored
+vector each time it moved, which is the coordination this change exists to
+delete. Two measurements say what that gives up here: **83.7% of term
+occurrences inside a chunk are singletons**, so `k1` has almost nothing to act
+on, and chunk length varies with a **coefficient of variation of 0.333**, so
+`b` is the real loss. Whether that costs anything is a retrieval question, and
+the ablation answers it.
+
+**The replacement retrieves better than the library it replaced.** Same corpus,
+same golden set, same generation and judge models:
+
+| Retriever | Ctx precision | Correctness |
+| --- | --- | --- |
+| Dense only | 0.508 → 0.502 | 0.925 → 0.925 |
+| Sparse only | 0.403 → **0.425** | 0.863 → **0.906** |
+| Hybrid + RRF | 0.434 → **0.456** | 0.906 → **0.925** |
+
+Dense is unchanged, which is the control: nothing about the dense path moved.
+Sparse-only correctness gains 4.3pp — about two and a half questions of 53 —
+and context precision gains for both sparse and hybrid, with a run-to-run sd of
+±0.004. One likely reason, not measured: the old implementation dropped hits
+scoring zero, so it often returned fewer than `retrieve_k` candidates, while
+the Qdrant query returns a full ranking.
+
+**The hybrid result also retracts an earlier claim.** This README used to say
+hybrid retrieval was worse than dense — "fusing BM25 into dense *lowers*
+correctness (0.925 → 0.906)". That gap is 1.9pp, which is one question of 53,
+and the run that produced these numbers also showed that 1.9pp is the smallest
+difference the harness can resolve. So the old claim was over-read. What the
+measurements support now is narrower and duller: **hybrid and dense are equal
+on correctness, and hybrid has lower context precision.** Dense alone is still
+what the deployment would choose on the evidence; hybrid no longer costs
+anything to keep.
+
+**How the resolution floor got measured — by accident.** The run reported
+`Hybrid + RRF` at 0.925 and `+ cross-encoder` at 0.906. Those are the same
+pipeline: the slim image has no `sentence-transformers`, so the rerank stage
+degrades to a pass-through that is byte-identical to having it switched off
+(`test_rerank_degradation.py` pins exactly that). Two identical configurations
+disagreed on one question, `seattle-sick-day-count`, and agreed on the other
+52. Within a configuration, repeats agreed on all 53.
+
+Three things changed because of it:
+
+- `scripts/ablation.py` now checks `reranker_available()` and **skips** the
+  cross-encoder row rather than printing a pass-through as if it were a
+  measurement, running the rows after it with reranking off, as deployed.
+- Every table now carries a **control row** — the first configuration run again
+  under a second name — so a reader can see how large a difference of zero is
+  before reading anything into a small one.
+- `--resume` and `--only`, because a 50-minute measurement should not be
+  all-or-nothing. It died twice and lost everything the first time.
+
+**Verified across two replicas.** `scripts/replica_check.py` addresses each API
+pod directly, which is the one thing a Service exists to prevent, and compares
+what each retrieves rather than what each answers — retrieval is what moved,
+and generation would only add a model's sampling to the comparison:
+
+```
+replicas: 2
+  count   agree   27
+  sparse  agree   7 chunks, top=['seed-02-leave:1', 'seed-06-seattle:1']
+```
 
 ## Throughput
 
@@ -568,8 +698,8 @@ linearly — the saturation point, not a cliff. No errors at any level.
 at concurrency 4 (p50 3.4s). Latency per request is flat as concurrency rises,
 so the service is holding requests rather than adding to them.
 
-**Head-of-line blocking**, which is the number the BM25 refactor exists to
-protect. Cache hits at concurrency 8, measured quiet, then measured again while
+**Head-of-line blocking**, which is the number moving synchronous work off the
+event loop exists to protect. Cache hits at concurrency 8, measured quiet, then measured again while
 one 5.2s model request is in flight:
 
 | | p50 | p95 | over 100ms |
@@ -592,29 +722,18 @@ any interactive session, far below what a runaway client could burn.
 Measured and known, not hidden. Each of these is a deliberate stopping point
 for a handbook-scale corpus, with the replacement named.
 
-**Runs as a single replica.** The BM25 index and the SLI counters both live in
-process memory. A `bm25:rev` counter in Redis invalidates the snapshot when
-another process reindexes, so correctness holds across the API and the worker,
-but every process still keeps its own copy.
+**The SLI counters are still per-process.** Retrieval state is not: dense and
+sparse vectors both live in Qdrant, so replicas share one view of the corpus
+and a write is visible to all of them at once. See
+[the sparse index moved into Qdrant](#the-sparse-index-moved-into-qdrant) for
+what that replaced and what it measured.
 
-No request pays to rebuild it. A background task polls the revision every
-`BM25_REFRESH_SECONDS` and rebuilds in a worker thread, because both the Qdrant
-scroll and the index build are synchronous and O(corpus) -- on the event loop
-they stall every other in-flight request, which is how a cold rebuild once put
-19s into a p95. Measured across an ingest, retrieval stays at 232ms against a
-130-324ms steady-state baseline, and the worker's reindex shows up in the API
-roughly two seconds later.
-
-The remaining cost is memory and duplicated work: every replica rebuilds the
-whole corpus for itself. Past a few tens of thousands of chunks the sparse
-index belongs in Qdrant alongside the dense one, which removes the per-process
-copy entirely.
-
-**The JSON SLI snapshot is still per-process.** `/api/v1/metrics` drives the
-UI and reports the replica that served the request, so with more than one it
-shows a slice rather than the system. The Prometheus endpoint is the answer for
-anything that has to be true across replicas; the JSON one stays because a demo
-should show numbers without asking you to stand up a scraper first.
+`/api/v1/metrics` drives the UI and reports the replica that served the
+request, so with more than one it shows a slice rather than the system. The
+Prometheus endpoint is the answer for anything that has to be true across
+replicas; the JSON one stays because a demo should show numbers without asking
+you to stand up a scraper first. It is the last piece of per-process state in
+the service, and unlike the sparse index it never affected an answer.
 
 **Auth is service-level, not user identity.** Every `/api/v1` route requires
 an API key mapped to a named principal, and the semantic cache and rate limit

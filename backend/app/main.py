@@ -25,7 +25,6 @@ from app.chunking import parse_file
 from app.config import settings
 from app.evaluate import run_eval
 from app.graph import Pipeline
-from app.hybrid import BM25Index
 from app.indexer import Indexer
 from app.llm import llm_configured
 from app.metrics import (
@@ -55,7 +54,6 @@ class AppState:
     cache: Cache
     vectors: VectorStore
     catalog: Catalog
-    bm25: BM25Index
     qa_cache: QACache | None
     queue: IndexQueue
     pipeline: Pipeline
@@ -72,21 +70,20 @@ def get_state() -> AppState:
 
 
 async def _background_refresh() -> None:
-    """Keep the BM25 snapshot and the corpus gauges fresh, off the request path.
+    """Housekeeping that should never happen during a request.
 
-    The worker reindexes in its own process and bumps bm25:rev; polling it here
-    means no query ever pays for the rebuild. The cost is bounded staleness on
-    the sparse side, which the interval names. The corpus gauges ride along
-    rather than being computed during a scrape, so scraping stays O(1).
+    The corpus gauges are computed here rather than during a scrape, so
+    scraping stays O(1); the expired-entry sweep of the paraphrase cache rides
+    along on a slower tick. This used to also rebuild an in-process sparse
+    index, which is what the interval was originally sized for -- sparse
+    retrieval now lives in Qdrant and is current the moment a write lands.
     """
     ticks = 0
-    sweep_every = max(1, int(60 / max(settings.bm25_refresh_seconds, 0.1)))
+    sweep_every = max(1, int(60 / max(settings.refresh_seconds, 0.1)))
     while True:
-        await asyncio.sleep(settings.bm25_refresh_seconds)
+        await asyncio.sleep(settings.refresh_seconds)
         ticks += 1
         try:
-            if await state.pipeline.warm():
-                log.info("bm25.refreshed")
             documents, chunks = await state.catalog.counts()
             set_corpus_size(documents, chunks)
             if state.qa_cache is not None and ticks % sweep_every == 0:
@@ -98,10 +95,11 @@ async def _background_refresh() -> None:
 
 
 async def _consume_index_jobs() -> None:
-    """Same process as the API so the in-memory BM25 index stays coherent.
+    """Index in-process, for the one-command demo.
 
-    Docker compose runs a dedicated worker instead (EMBEDDED_WORKER=false)
-    and the API refreshes BM25 from Qdrant when the revision key changes.
+    Docker compose and Kubernetes both run a dedicated worker instead
+    (EMBEDDED_WORKER=false). Either way the API sees the result immediately:
+    indexing writes to Qdrant and both retrievers read from there.
     """
     async for envelope in state.queue.jobs(consumer="api-embedded"):
         job = envelope.job
@@ -170,16 +168,10 @@ async def lifespan(app: FastAPI):
         # stop the API from serving.
         log.warning("qa_cache.unavailable")
         state.qa_cache = None
-    state.bm25 = BM25Index()
     state.queue = IndexQueue(state.redis)
     await state.queue.start()
     state.indexer = Indexer(state.cache, state.vectors, state.catalog)
-    state.pipeline = Pipeline(state.cache, state.vectors, state.bm25, qa_cache=state.qa_cache)
-    try:
-        # Build the BM25 snapshot now so the first query does not pay for it.
-        await state.pipeline.warm()
-    except Exception:
-        log.warning("bm25.rebuild_skipped")
+    state.pipeline = Pipeline(state.cache, state.vectors, qa_cache=state.qa_cache)
     state.refresh_task = asyncio.create_task(_background_refresh())
     if settings.embedded_worker:
         state.worker_task = asyncio.create_task(_consume_index_jobs())
@@ -278,13 +270,9 @@ async def seed(s: StateDep, principal: PrincipalDep):
 
 @app.delete("/api/v1/documents/{doc_id}")
 async def delete_doc(doc_id: str, s: StateDep, principal: PrincipalDep):
+    # One delete, both retrievers: the sparse vectors are these same points.
     await asyncio.to_thread(s.vectors.delete_doc, doc_id)
     await s.catalog.delete(doc_id)
-    # Bump the revision and let the background refresher rebuild in a thread.
-    # Rebuilding here instead put an O(corpus) scroll and index build directly
-    # on the event loop -- exactly the stall the refresher was written to end,
-    # left behind on the one path that was never load-tested.
-    await s.cache.r.incr("bm25:rev")
     return {"ok": True}
 
 

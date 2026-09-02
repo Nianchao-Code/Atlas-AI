@@ -19,7 +19,7 @@ import json
 import statistics
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,10 +31,10 @@ for _candidate in (ROOT / "backend", Path("/app")):
 from app.config import settings  # noqa: E402
 from app.evaluate import load_golden, run_eval  # noqa: E402
 from app.graph import Pipeline, PipelineConfig  # noqa: E402
-from app.hybrid import BM25Index  # noqa: E402
 from app.llm import embed_texts, llm_configured  # noqa: E402
 from app.obs import Cache  # noqa: E402
 from app.redis_client import create_redis  # noqa: E402
+from app.rerank import reranker_available  # noqa: E402
 from app.vectors import VectorStore  # noqa: E402
 
 
@@ -43,10 +43,24 @@ class Variant:
     label: str
     note: str
     config: PipelineConfig
+    # True only for the row whose entire point is the cross-encoder. Without
+    # the optional model the stage degrades to a pass-through, so that row has
+    # to be skipped; the rows after it still mean something with reranking off,
+    # which is also how the service is deployed.
+    measures_rerank: bool = False
 
 
 # Cumulative build-up, then one knock-out row. Each step adds exactly one
 # stage so a delta can be attributed to that stage and nothing else.
+#
+# The control row is the same configuration as the first, run again under a
+# different name. It exists because a table of small deltas is unreadable
+# without knowing how large a delta of zero looks: generation is sampled, so
+# two identical pipelines can disagree, and the size of that disagreement is
+# the smallest difference anything else in the table is allowed to mean. This
+# was not a hypothetical -- an earlier run reported "Hybrid + RRF" at 0.925 and
+# "+ cross-encoder" at 0.906 while the cross-encoder was not installed, which
+# made them the same pipeline.
 VARIANTS = [
     Variant(
         "Dense only",
@@ -54,12 +68,22 @@ VARIANTS = [
         PipelineConfig(sparse=False, rerank=False, grade=False),
     ),
     Variant(
-        "BM25 only",
-        "lexical search, no fusion",
+        "Control: dense only again",
+        "identical to the row above",
+        PipelineConfig(sparse=False, rerank=False, grade=False),
+    ),
+    Variant(
+        "Sparse only",
+        "Qdrant sparse vectors, IDF-weighted",
         PipelineConfig(dense=False, rerank=False, grade=False),
     ),
-    Variant("Hybrid + RRF", "dense + BM25 fused", PipelineConfig(rerank=False, grade=False)),
-    Variant("+ cross-encoder", "reranked top candidates", PipelineConfig(grade=False)),
+    Variant("Hybrid + RRF", "fused inside Qdrant", PipelineConfig(rerank=False, grade=False)),
+    Variant(
+        "+ cross-encoder",
+        "reranked top candidates",
+        PipelineConfig(grade=False),
+        measures_rerank=True,
+    ),
     Variant("+ LLM grading (full)", "corrective loop, abstains", PipelineConfig()),
     Variant("Full - query rewrite", "isolates HyDE/rewrite", PipelineConfig(rewrite=False)),
 ]
@@ -106,7 +130,7 @@ def render_markdown(rows: list[dict], repeats: int, n_cases: int) -> str:
         f"{', mean ±sd' if repeats > 1 else ''}. "
         f"Judge: `{settings.cheap_model}`, generation: `{settings.chat_model}`. "
         "Query embeddings are content-hash cached in Redis, so p95 covers vector "
-        "search + BM25 + rerank, not embedding API time."
+        "search and fusion, not embedding API time."
     )
     return "\n".join(lines) + "\n" + footer + "\n"
 
@@ -131,6 +155,17 @@ async def main() -> int:
     parser.add_argument("--limit", type=int, default=None, help="cap golden cases (smoke runs)")
     parser.add_argument("--out", type=Path, default=None, help="write the markdown table here")
     parser.add_argument("--json", type=Path, default=None, help="write raw per-run reports here")
+    parser.add_argument(
+        "--only",
+        nargs="+",
+        metavar="LABEL",
+        help="run only variants whose label contains one of these (case-insensitive)",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="keep configurations already present in --json and run the rest",
+    )
     args = parser.parse_args()
 
     if not llm_configured():
@@ -144,8 +179,6 @@ async def main() -> int:
     cache = Cache(r)
     vectors = VectorStore()
     vectors.ensure()
-    bm25 = BM25Index()
-    bm25.rebuild(vectors.scroll_all())
 
     cases = load_golden()[: args.limit or None]
     if not cases:
@@ -156,15 +189,44 @@ async def main() -> int:
     # not charged for cold embeddings the later ones get for free.
     await embed_texts([c["question"] for c in cases])
 
-    rows: list[dict] = []
+    # A 50-minute measurement should not be all-or-nothing. --resume reloads
+    # what a previous run finished; the loop below skips those labels.
     raw: dict[str, list[dict]] = {}
+    if args.resume and args.json and args.json.exists():
+        raw = json.loads(args.json.read_text(encoding="utf-8"))
+        print(f"  resuming, {len(raw)} configuration(s) already measured", file=sys.stderr)
+    rows: list[dict] = [
+        {
+            "label": v.label,
+            "note": v.note,
+            "metrics": {k: _agg([run[k] for run in raw[v.label]]) for k, _l, _f in METRICS},
+        }
+        for v in VARIANTS
+        if v.label in raw
+    ]
     started = time.time()
 
+    # A row that says "+ cross-encoder" while the model is absent measures a
+    # pass-through, which is worse than no row: it reads as evidence.
+    no_reranker = not reranker_available()
+    if no_reranker:
+        print(
+            "  note: sentence-transformers is absent. The cross-encoder row is skipped\n"
+            "        and the rows after it run with reranking off, as deployed."
+        )
+
     for variant in VARIANTS:
-        pipeline = Pipeline(cache, vectors, bm25, config=variant.config)
-        # Sync the BM25 snapshot before timing: a cold rebuild inside the first
-        # measured query added ~19s to p95 and told us nothing about retrieval.
-        await pipeline.warm()
+        if variant.label in raw:
+            continue
+        if args.only and not any(t.lower() in variant.label.lower() for t in args.only):
+            continue
+        if no_reranker and variant.measures_rerank:
+            continue
+        if no_reranker and variant.config.rerank:
+            variant = replace(variant, config=replace(variant.config, rerank=False))
+        # Nothing to warm: both retrievers read Qdrant, so there is no
+        # process-local snapshot for a first measured query to pay for.
+        pipeline = Pipeline(cache, vectors, config=variant.config)
         runs: list[dict] = []
         for i in range(args.repeats):
             t0 = time.time()

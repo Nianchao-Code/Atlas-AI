@@ -20,7 +20,6 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.config import settings
 from app.evaluate import run_eval
 from app.graph import Pipeline
-from app.hybrid import BM25Index
 from app.indexer import Indexer
 from app.llm import llm_configured
 from app.obs import Cache
@@ -64,16 +63,12 @@ async def run_gate(mode: str) -> int:
     vectors = VectorStore()
     vectors.ensure()
     catalog = Catalog(r)
-    bm25 = BM25Index()
     queue = IndexQueue(r)
     await queue.start()
     indexer = Indexer(cache, vectors, catalog)
-    pipeline = Pipeline(cache, vectors, bm25)
+    pipeline = Pipeline(cache, vectors)
 
     await seed_corpus(catalog, queue, indexer)
-    # Indexing only bumps bm25:rev; building the sparse snapshot from it is the
-    # reader's job, here as in the API.
-    await pipeline.warm()
     report = await run_eval(pipeline, limit=None)
     await queue.close()
     await r.aclose()

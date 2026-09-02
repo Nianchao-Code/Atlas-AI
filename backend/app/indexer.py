@@ -35,11 +35,9 @@ class Indexer:
             text = await asyncio.to_thread(parse_file, path)
         chunks = chunk_document(doc_id=doc_id, filename=job["filename"], text=text)
         vectors = await self._embed_cached([c.text for c in chunks])
+        # Writes dense and sparse together, so both retrievers see the
+        # document at the same moment and neither needs to be told about it.
         await asyncio.to_thread(self.vectors.upsert, chunks, vectors)
-
-        # Announce the change; whoever serves queries rebuilds its own sparse
-        # snapshot from this key, in a thread, on its own schedule.
-        await self.cache.r.incr("bm25:rev")
 
         if rec:
             rec.status = "ready"

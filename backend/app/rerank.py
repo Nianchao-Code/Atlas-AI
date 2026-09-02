@@ -25,6 +25,20 @@ def _load_cross_encoder():
     return _cross_encoder
 
 
+def reranker_available() -> bool:
+    """Whether the optional model can actually be loaded.
+
+    The ablation harness asks before reporting a cross-encoder row: with the
+    package absent the stage degrades to a pass-through, and a row measuring a
+    pass-through while claiming to measure a reranker is worse than no row.
+    """
+    try:
+        _load_cross_encoder()
+    except Exception:
+        return False
+    return True
+
+
 def cross_encoder_rerank(
     question: str,
     hits: list[Hit],

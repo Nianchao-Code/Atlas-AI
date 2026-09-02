@@ -11,7 +11,8 @@ contributes.
   hol   Head-of-line blocking. Cache hits are timed while one cold request runs
         alongside them. If any synchronous work is left on the event loop, the
         fast requests inherit the slow one's latency -- this is the property
-        the BM25 refactor exists to protect, and it is otherwise invisible.
+        moving synchronous work off the event loop exists to protect, and
+        it is otherwise invisible.
 
   cold  A small ramp on unique questions. Expected to be bounded by the model,
         and included so the comparison with warm is on the page rather than

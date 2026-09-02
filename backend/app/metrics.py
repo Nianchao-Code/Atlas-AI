@@ -25,7 +25,7 @@ QUERIES = Counter(
 
 RETRIEVAL_SECONDS = Histogram(
     "atlas_retrieval_seconds",
-    "Time in the retrieve node: embed, vector search, BM25, fusion",
+    "Time in the retrieve node: embed, then one fused dense+sparse Qdrant query",
     buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
 )
 

@@ -1,9 +1,9 @@
 """The retrieve node is what the ablation harness varies, so pin its wiring.
 
 These cover the branches the ablation depends on: that switching a retriever
-off really removes it, that a lone retriever keeps its own ranking instead of
-being rewritten by RRF, and that rerank/grade honour the per-pipeline config
-rather than only the global setting.
+off really removes it, that a lone retriever is queried on its own rather than
+sent through a fusion with nothing to fuse against, and that rerank/grade
+honour the per-pipeline config rather than only the global setting.
 """
 
 from __future__ import annotations
@@ -30,49 +30,33 @@ def _hit(chunk_id: str, score: float, source: str) -> Hit:
     )
 
 
-class _FakeRedis:
-    async def get(self, _key: str) -> str:
-        return "1"
-
-
-class _FakeCache:
-    def __init__(self) -> None:
-        self.r = _FakeRedis()
-
-
 class _FakeVectors:
+    """Records which of the three retrieval calls the node actually made."""
+
     def __init__(self) -> None:
-        self.calls = 0
+        self.dense = 0
+        self.sparse = 0
+        self.hybrid = 0
 
     def search(self, _vec, _k):
-        self.calls += 1
+        self.dense += 1
         return [_hit("dense-a", 0.9, "dense"), _hit("dense-b", 0.8, "dense")]
 
-    def scroll_all(self):
-        return []
+    def search_sparse(self, _q, _k):
+        self.sparse += 1
+        return [_hit("sparse-a", 12.0, "sparse")]
+
+    def search_hybrid(self, _vec, _q, _k):
+        self.hybrid += 1
+        return [_hit("dense-b", 0.9, "rrf"), _hit("sparse-a", 0.5, "rrf")]
 
 
-class _FakeBM25:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def search(self, _q, _k):
-        self.calls += 1
-        return [_hit("bm25-a", 12.0, "bm25"), _hit("dense-b", 3.0, "bm25")]
-
-    def rebuild(self, _hits) -> None:
-        pass
-
-
-def _pipeline(config: PipelineConfig) -> tuple[Pipeline, _FakeVectors, _FakeBM25]:
+def _pipeline(config: PipelineConfig) -> tuple[Pipeline, _FakeVectors]:
     p = Pipeline.__new__(Pipeline)
-    vectors, bm25 = _FakeVectors(), _FakeBM25()
-    p.cache = _FakeCache()
+    vectors = _FakeVectors()
     p.vectors = vectors
-    p.bm25 = bm25
     p.config = config
-    p._bm25_rev = "1"  # already warm; keeps the rebuild out of the assertions
-    return p, vectors, bm25
+    return p, vectors
 
 
 @pytest.fixture(autouse=True)
@@ -87,37 +71,40 @@ def _state() -> dict:
     return {"question": "how many leave days", "tracer": Tracer()}
 
 
-async def test_dense_only_skips_bm25():
-    p, vectors, bm25 = _pipeline(PipelineConfig(sparse=False))
+async def test_dense_only_queries_dense_alone():
+    p, vectors = _pipeline(PipelineConfig(sparse=False))
     out = await p.retrieve(_state())
-    assert vectors.calls == 1
-    assert bm25.calls == 0
+    assert (vectors.dense, vectors.sparse, vectors.hybrid) == (1, 0, 0)
     assert [h.chunk_id for h in out["hits"]] == ["dense-a", "dense-b"]
     # A single retriever keeps its own ranking and its own source label.
     assert {h.source for h in out["hits"]} == {"dense"}
 
 
-async def test_bm25_only_skips_dense():
-    p, vectors, bm25 = _pipeline(PipelineConfig(dense=False))
+async def test_sparse_only_queries_sparse_alone():
+    p, vectors = _pipeline(PipelineConfig(dense=False))
     out = await p.retrieve(_state())
-    assert vectors.calls == 0
-    assert bm25.calls == 1
-    assert {h.source for h in out["hits"]} == {"bm25"}
+    assert (vectors.dense, vectors.sparse, vectors.hybrid) == (0, 1, 0)
+    assert {h.source for h in out["hits"]} == {"sparse"}
 
 
-async def test_hybrid_fuses_both_and_relabels():
-    p, vectors, bm25 = _pipeline(PipelineConfig())
+async def test_hybrid_makes_one_fused_call():
+    p, vectors = _pipeline(PipelineConfig())
     out = await p.retrieve(_state())
-    assert vectors.calls == 1 and bm25.calls == 1
-    ids = [h.chunk_id for h in out["hits"]]
-    assert set(ids) == {"dense-a", "dense-b", "bm25-a"}
+    # The point of moving fusion into Qdrant: one round trip, not two plus a
+    # client-side merge.
+    assert (vectors.dense, vectors.sparse, vectors.hybrid) == (0, 0, 1)
     assert {h.source for h in out["hits"]} == {"rrf"}
-    # dense-b is the only chunk both retrievers return, so RRF ranks it first.
-    assert ids[0] == "dense-b"
+
+
+async def test_no_retriever_returns_nothing_instead_of_raising():
+    p, vectors = _pipeline(PipelineConfig(dense=False, sparse=False))
+    out = await p.retrieve(_state())
+    assert out["hits"] == []
+    assert (vectors.dense, vectors.sparse, vectors.hybrid) == (0, 0, 0)
 
 
 async def test_grade_disabled_short_circuits_without_llm():
-    p, _v, _b = _pipeline(PipelineConfig(grade=False))
+    p, _v = _pipeline(PipelineConfig(grade=False))
     hits = [_hit(f"c{i}", 1.0, "rrf") for i in range(10)]
     out = await p.grade({**_state(), "hits": hits})
     assert out["grade"] == "sufficient"
@@ -125,7 +112,7 @@ async def test_grade_disabled_short_circuits_without_llm():
 
 
 async def test_rewrite_disabled_passes_question_through():
-    p, _v, _b = _pipeline(PipelineConfig(rewrite=False))
+    p, _v = _pipeline(PipelineConfig(rewrite=False))
     out = await p.rewrite(_state())
     assert out["rewritten"] == "how many leave days"
 

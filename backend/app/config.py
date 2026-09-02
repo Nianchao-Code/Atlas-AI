@@ -53,10 +53,10 @@ class Settings(BaseSettings):
     # here to bound spend, not to protect the app, so it sits well above any
     # interactive session and well below what a runaway client could burn.
     rate_limit_per_minute: int = 300
-    # How often the API re-checks whether the worker has reindexed. Sparse
-    # retrieval can be this far behind an ingest; dense retrieval sees it at
-    # once, because that lives in Qdrant rather than in process memory.
-    bm25_refresh_seconds: float = 2.0
+    # Housekeeping tick: corpus gauges, and on a slower multiple of it the
+    # paraphrase-cache sweep. Retrieval no longer waits on this -- dense and
+    # sparse both live in Qdrant and are current as soon as a write lands.
+    refresh_seconds: float = 2.0
     # Port the worker exposes its scrape endpoint on. The API serves /metrics
     # from its own FastAPI app and ignores this. 0 disables.
     metrics_port: int = 9100

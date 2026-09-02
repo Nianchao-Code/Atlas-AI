@@ -9,7 +9,6 @@ from langgraph.graph import END, StateGraph
 
 from app.config import settings
 from app.guard import sanitize_chunk, scan_user
-from app.hybrid import BM25Index, reciprocal_rank_fusion
 from app.llm import chat_json, chat_text, chat_text_stream, embed_texts, llm_configured
 from app.obs import Cache, Tracer, tokens
 from app.qa_cache import QACache
@@ -43,7 +42,7 @@ class RAGState(TypedDict, total=False):
 
 
 def _keyword_query(rewritten: str | None, question: str) -> str:
-    """BM25 runs on the rewritten keyword line, not the HyDE paragraph."""
+    """Sparse search runs on the rewritten keyword line, not the HyDE paragraph."""
     if rewritten:
         return rewritten.split("\n", 1)[0].strip() or question
     return question
@@ -91,19 +90,15 @@ class Pipeline:
         self,
         cache: Cache,
         vectors: VectorStore,
-        bm25: BM25Index,
         config: PipelineConfig | None = None,
         qa_cache: QACache | None = None,
     ) -> None:
         self.cache = cache
         self.vectors = vectors
-        self.bm25 = bm25
         # Optional so the eval and ablation harnesses, which run with caching
         # off anyway, do not need a collection to exist.
         self.qa_cache = qa_cache
         self.config = config or PipelineConfig.from_settings()
-        self._bm25_rev: str | None = None
-        self._warm_lock = asyncio.Lock()
         self.graph = self._build()
 
     def _build(self):
@@ -229,30 +224,6 @@ class Pipeline:
     def _sanitize(self, text: str) -> str:
         return sanitize_chunk(text) if self.config.sanitize else text
 
-    async def warm(self) -> bool:
-        """Rebuild the BM25 snapshot if another process has reindexed.
-
-        Returns True when a rebuild actually happened.
-
-        The scroll and the index build are both synchronous and both O(corpus),
-        so they run in a worker thread: on the event loop they stall every
-        other in-flight request, which is how a cold rebuild once put 19s into
-        a p95. Serving does not call this at all any more -- main.py warms once
-        at startup and then refreshes on a timer.
-        """
-        raw_rev = await self.cache.r.get("bm25:rev")
-        rev = raw_rev.decode() if isinstance(raw_rev, bytes) else raw_rev
-        if rev == self._bm25_rev:
-            return False
-        async with self._warm_lock:
-            # Another waiter may have rebuilt while this one queued.
-            if rev == self._bm25_rev:
-                return False
-            hits = await asyncio.to_thread(self.vectors.scroll_all)
-            await asyncio.to_thread(self.bm25.rebuild, hits)
-            self._bm25_rev = rev
-            return True
-
     async def retrieve(self, state: RAGState) -> dict[str, Any]:
         import time
 
@@ -260,25 +231,30 @@ class Pipeline:
         q = state.get("rewritten") or state["question"]
         t0 = time.perf_counter()
         vecs = await embed_texts([q])
-        bm25_q = _keyword_query(state.get("rewritten"), state["question"])
-        dense = self.vectors.search(vecs[0], settings.retrieve_k) if self.config.dense else []
-        sparse = self.bm25.search(bm25_q, settings.retrieve_k) if self.config.sparse else []
-        # RRF only means something when there are two rankings to fuse. With a
-        # single retriever, pass its own ranking through untouched so the
-        # ablation measures that retriever and not RRF's rewrite of it.
-        ranked = [lst for lst in (dense, sparse) if lst]
-        if len(ranked) > 1:
-            fused = reciprocal_rank_fusion(ranked, limit=settings.retrieve_k)
+        keywords = _keyword_query(state.get("rewritten"), state["question"])
+        k = settings.retrieve_k
+        # One Qdrant call when both retrievers are live: it fuses with RRF
+        # server-side. The single-retriever branches exist for the ablation,
+        # and pass that retriever's own ranking through rather than sending it
+        # to a fusion that has nothing to fuse it with.
+        if self.config.dense and self.config.sparse:
+            mode = "dense+sparse rrf"
+            hits = await asyncio.to_thread(self.vectors.search_hybrid, vecs[0], keywords, k)
+        elif self.config.dense:
+            mode = "dense"
+            hits = await asyncio.to_thread(self.vectors.search, vecs[0], k)
+        elif self.config.sparse:
+            mode = "sparse"
+            hits = await asyncio.to_thread(self.vectors.search_sparse, keywords, k)
         else:
-            fused = ranked[0][: settings.retrieve_k] if ranked else []
+            mode, hits = "none", []
         ms = (time.perf_counter() - t0) * 1000
         tracer.span(
             "retrieve",
-            f"dense={len(dense)} bm25={len(sparse)} rrf={len(fused)}",
-            dense=[h.filename for h in dense[:4]],
-            bm25=[h.filename for h in sparse[:4]],
+            f"{mode}={len(hits)} docs={len({h.doc_id for h in hits})}",
+            sources=[h.filename for h in hits[:4]],
         )
-        return {"hits": fused, "query_vec": vecs[0], "retrieval_ms": ms}
+        return {"hits": hits, "query_vec": vecs[0], "retrieval_ms": ms}
 
     async def rerank(self, state: RAGState) -> dict[str, Any]:
         tracer: Tracer = state["tracer"]

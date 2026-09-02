@@ -111,7 +111,7 @@ def _hashed_vector(text: str) -> list[float]:
     """Deterministic fallback so tests and dry-runs work without an API key.
 
     Not a substitute for a real embedding model — retrieval quality in
-    keyless mode is lexical-only (BM25 still works).
+    keyless mode is lexical-only (sparse retrieval still works).
     """
     import hashlib
     import struct
