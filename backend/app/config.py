@@ -24,7 +24,15 @@ class Settings(BaseSettings):
     retrieve_k: int = 24
     rerank_k: int = 6
     max_retrieve_retries: int = 2
-    semantic_cache_threshold: float = 0.92
+    # Calibrated, not guessed. scripts/calibrate_cache.py measures cosine
+    # similarity for two sets of question pairs: the same question reworded,
+    # and questions one decisive word apart. At 0.82 it catches 6 of 9
+    # paraphrases with no wrong hit, and clears the worst false pair
+    # (Seattle sick leave against the China cap, 0.768) by five points.
+    # The old 0.92 caught 2 of 9 -- and nothing at all in practice, because
+    # the stored vector described a different text than the lookup.
+    semantic_cache_threshold: float = 0.82
+    qa_cache_collection: str = "atlas_qa_cache"
 
     enable_cross_encoder: bool = True
     cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"

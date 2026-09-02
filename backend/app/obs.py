@@ -129,55 +129,6 @@ class Cache:
             ex=60 * 60 * 12,
         )
 
-    async def nearest_semantic(
-        self,
-        principal: str,
-        query_vec: list[float],
-        threshold: float,
-    ) -> dict[str, Any] | None:
-        """Exact-question cache is cheap; this catches paraphrases.
-
-        Caching the question rather than only the chunk is what takes the whole
-        graph off the hot path when someone asks the same thing twice.
-
-        The index is a 200-entry Redis list scanned linearly -- a deliberate
-        stand-in for a second vector collection. It costs two round trips per
-        entry, which is fine at handbook QPS and is the first thing to replace
-        under load.
-        """
-        keys = await self.r.lrange(f"qa:recent:{principal}", 0, 199)
-        best: tuple[float, dict[str, Any]] | None = None
-        for key in keys:
-            blob = await self.r.get(f"qa:vec:{principal}:{key}")
-            cached = await self.r.get(f"qa:{principal}:{key}")
-            if not blob or not cached:
-                continue
-            vec = json.loads(blob)
-            sim = _cosine(query_vec, vec)
-            if sim >= threshold and (best is None or sim > best[0]):
-                best = (sim, json.loads(cached))
-        return None if best is None else best[1]
-
-    async def remember_query_vec(
-        self, principal: str, question: str, vec: list[float], payload: dict[str, Any]
-    ) -> None:
-        key = content_hash(question.strip().lower())
-        await self.set_semantic(principal, question, payload)
-        await self.r.set(f"qa:vec:{principal}:{key}", json.dumps(vec), ex=60 * 60 * 12)
-        await self.r.lpush(f"qa:recent:{principal}", key)
-        await self.r.ltrim(f"qa:recent:{principal}", 0, 199)
-
-
-def _cosine(a: list[float], b: list[float]) -> float:
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b, strict=False))
-    na = sum(x * x for x in a) ** 0.5
-    nb = sum(y * y for y in b) ** 0.5
-    if na == 0 or nb == 0:
-        return 0.0
-    return dot / (na * nb)
-
 
 class TokenCounter:
     def __init__(self) -> None:

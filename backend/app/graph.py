@@ -13,6 +13,7 @@ from app.guard import sanitize_chunk, scan_user
 from app.hybrid import BM25Index, reciprocal_rank_fusion
 from app.llm import chat_json, chat_text, chat_text_stream, embed_texts, llm_configured
 from app.obs import Cache, Tracer, tokens
+from app.qa_cache import QACache
 from app.rerank import cross_encoder_rerank
 from app.vectors import Hit, VectorStore
 
@@ -21,6 +22,7 @@ class RAGState(TypedDict, total=False):
     question: str
     rewritten: str
     query_vec: list[float]
+    question_vec: list[float]
     hits: list[Hit]
     packed: list[Hit]
     answer: str
@@ -88,10 +90,14 @@ class Pipeline:
         vectors: VectorStore,
         bm25: BM25Index,
         config: PipelineConfig | None = None,
+        qa_cache: QACache | None = None,
     ) -> None:
         self.cache = cache
         self.vectors = vectors
         self.bm25 = bm25
+        # Optional so the eval and ablation harnesses, which run with caching
+        # off anyway, do not need a collection to exist.
+        self.qa_cache = qa_cache
         self.config = config or PipelineConfig.from_settings()
         self._bm25_rev: str | None = None
         self._warm_lock = asyncio.Lock()
@@ -168,15 +174,23 @@ class Pipeline:
         if hit:
             tracer.span("cache", "exact hit")
             return {**hit, "cache_hit": True}
+        if self.qa_cache is None:
+            tracer.span("cache", "miss")
+            return {"cache_hit": False}
         vecs = await embed_texts([state["question"]])
-        near = await self.cache.nearest_semantic(
-            principal, vecs[0], settings.semantic_cache_threshold
+        near = await asyncio.to_thread(
+            self.qa_cache.nearest,
+            principal,
+            vecs[0],
+            settings.semantic_cache_threshold,
         )
         if near:
             tracer.span("cache", "near-dup hit")
             return {**near, "cache_hit": True}
+        # Keep the raw-question vector: this is the text the next lookup will
+        # embed, so it is the only one worth storing.
         tracer.span("cache", "miss")
-        return {"cache_hit": False}
+        return {"cache_hit": False, "question_vec": vecs[0]}
 
     async def rewrite(self, state: RAGState) -> dict[str, Any]:
         tracer: Tracer = state["tracer"]
@@ -434,11 +448,12 @@ class Pipeline:
         }
         grounded = (payload.get("faithfulness") or 0) >= 0.7 and not payload["abstained"]
         if use_cache and grounded and payload["answer"]:
-            vec = result.get("query_vec")
-            if vec:
-                await self.cache.remember_query_vec(principal, question, vec, payload)
-            else:
-                await self.cache.set_semantic(principal, question, payload)
+            await self.cache.set_semantic(principal, question, payload)
+            vec = result.get("question_vec")
+            if vec and self.qa_cache is not None:
+                await asyncio.to_thread(
+                    self.qa_cache.remember, principal, question, vec, payload
+                )
         return payload
 
     def _build_generate_prompt(self, state: RAGState) -> tuple[str, str, int]:
@@ -589,9 +604,10 @@ class Pipeline:
         payload = self._finalize_payload(question, state, tracer)
         grounded = (payload.get("faithfulness") or 0) >= 0.7 and not payload["abstained"]
         if use_cache and grounded and payload["answer"]:
-            vec = state.get("query_vec")
-            if vec:
-                await self.cache.remember_query_vec(principal, question, vec, payload)
-            else:
-                await self.cache.set_semantic(principal, question, payload)
+            await self.cache.set_semantic(principal, question, payload)
+            vec = state.get("question_vec")
+            if vec and self.qa_cache is not None:
+                await asyncio.to_thread(
+                    self.qa_cache.remember, principal, question, vec, payload
+                )
         yield {"type": "done", "data": payload}

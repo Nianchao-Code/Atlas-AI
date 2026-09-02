@@ -36,6 +36,7 @@ from app.metrics import (
 )
 from app.models import DocumentRecord, MetricsSnapshot, QueryRequest, QueryResponse
 from app.obs import Cache, obs
+from app.qa_cache import QACache
 from app.redis_client import create_redis
 from app.store_docs import Catalog, IndexQueue
 from app.vectors import VectorStore
@@ -49,6 +50,7 @@ class AppState:
     vectors: VectorStore
     catalog: Catalog
     bm25: BM25Index
+    qa_cache: QACache
     queue: IndexQueue
     pipeline: Pipeline
     indexer: Indexer
@@ -71,13 +73,18 @@ async def _background_refresh() -> None:
     the sparse side, which the interval names. The corpus gauges ride along
     rather than being computed during a scrape, so scraping stays O(1).
     """
+    ticks = 0
+    sweep_every = max(1, int(60 / max(settings.bm25_refresh_seconds, 0.1)))
     while True:
         await asyncio.sleep(settings.bm25_refresh_seconds)
+        ticks += 1
         try:
             if await state.pipeline.warm():
                 log.info("bm25.refreshed")
             documents, chunks = await state.catalog.counts()
             set_corpus_size(documents, chunks)
+            if state.qa_cache is not None and ticks % sweep_every == 0:
+                await asyncio.to_thread(state.qa_cache.purge_expired)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -145,11 +152,21 @@ async def lifespan(app: FastAPI):
     state.vectors = VectorStore()
     state.vectors.ensure()
     state.catalog = Catalog(state.redis)
+    state.qa_cache = QACache()
+    try:
+        state.qa_cache.ensure()
+    except Exception:
+        # A missing paraphrase cache degrades to exact-match only; it must not
+        # stop the API from serving.
+        log.warning("qa_cache.unavailable")
+        state.qa_cache = None
     state.bm25 = BM25Index()
     state.queue = IndexQueue(state.redis)
     await state.queue.start()
     state.indexer = Indexer(state.cache, state.vectors, state.catalog, state.bm25)
-    state.pipeline = Pipeline(state.cache, state.vectors, state.bm25)
+    state.pipeline = Pipeline(
+        state.cache, state.vectors, state.bm25, qa_cache=state.qa_cache
+    )
     try:
         # Build the BM25 snapshot now so the first query does not pay for it.
         await state.pipeline.warm()
