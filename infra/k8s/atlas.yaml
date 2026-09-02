@@ -142,6 +142,10 @@ spec:
   template:
     metadata:
       labels: { app: api }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: /metrics
     spec:
       containers:
         - name: api
@@ -208,12 +212,19 @@ spec:
   template:
     metadata:
       labels: { app: worker }
+      # The worker serves no HTTP of its own, so it runs a listener purely to
+      # be scrapeable. Without it, index throughput and failures are invisible.
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: /metrics
     spec:
       containers:
         - name: worker
           image: atlas-api:latest
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "app.worker"]
+          ports: [{ containerPort: 9100, name: metrics }]
           envFrom: [{ configMapRef: { name: atlas-config } }]
           env:
             - name: OPENAI_API_KEY
