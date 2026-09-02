@@ -51,6 +51,11 @@ Offline eval
 - **Eval set is part of the product** — graph and chunking changes should pass the golden set before shipping.
 - **Single vector store** — Qdrant for dense search and payload filters. Handbook Q&A does not need GraphRAG or a second index.
 
+These are design intentions. [What each stage actually buys](#what-each-stage-actually-buys)
+measures them, and on the current corpus it does not vindicate all of them —
+hybrid retrieval and the cross-encoder show no benefit at this scale, and the
+corrective loop trades recall for precision and tokens.
+
 ## Quick start
 
 Requires Python 3.11+, Node 20+, Docker (Redis + Qdrant).
@@ -141,6 +146,96 @@ python scripts/eval_gate.py --full
 ```
 
 Thresholds live in `samples/eval/thresholds.json`.
+
+## What each stage actually buys
+
+`scripts/ablation.py` runs the golden set through progressively richer
+pipelines. Each row adds exactly one stage, so a delta belongs to that stage
+and nothing else.
+
+| Configuration | Recall | Ctx precision | Faithful | Correct | Halluc. | p95 ms | Tokens |
+|---|---|---|---|---|---|---|---|
+| **Dense only** | 1.000 ±0.000 | 0.536 ±0.017 | 1.000 ±0.000 | 1.000 ±0.000 | 0.000 | 1469 ±1579 | 932 ±2 |
+| **BM25 only** | 1.000 ±0.000 | 0.405 ±0.000 | 1.000 ±0.000 | 1.000 ±0.000 | 0.000 | 3460 ±3630 | 971 ±0 |
+| **Hybrid + RRF** | 1.000 ±0.000 | 0.452 ±0.000 | 1.000 ±0.000 | 0.929 ±0.000 | 0.000 | 1767 ±1944 | 989 ±0 |
+| **+ cross-encoder** | 1.000 ±0.000 | 0.476 ±0.000 | 1.000 ±0.000 | 0.964 ±0.051 | 0.000 | 628 ±10 | 968 ±0 |
+| **+ LLM grading (full)** | 0.923 ±0.000 | 0.786 ±0.000 | 0.993 ±0.010 | 0.839 ±0.025 | 0.000 | 283 ±77 | 239 ±0 |
+| **Full − query rewrite** | 0.923 ±0.000 | 0.779 ±0.010 | 1.000 ±0.000 | 0.804 ±0.025 | 0.000 | 1648 ±1850 | 239 ±0 |
+
+14 questions, 2 runs per configuration, mean ±sd. Judge `gpt-4o-mini`,
+generation `gpt-4o`. Reproduce with `python scripts/ablation.py --repeats 2`.
+
+**Read it honestly:**
+
+- **The retrieval stack is not earning its keep on this corpus.** Dense, BM25,
+  hybrid and hybrid+rerank all reach recall 1.000 — 8 documents and 27 chunks
+  are not enough to separate them. Hybrid actually *lowers* context precision
+  against dense alone (0.536 → 0.452), because fusing in BM25 hits pulls in
+  passages the dense ranker had already pushed down.
+- **Grading is the one stage that moves the numbers, and it is a trade, not a
+  win.** Context precision 0.45 → 0.79 and prompt tokens 989 → 239 (−76%), paid
+  for with recall 1.000 → 0.923 and correctness 0.964 → 0.839. On a corpus this
+  small the trade is bad; the token saving is what would justify it at scale.
+- **Query rewrite/HyDE is worth roughly +3.5pp correctness** (0.804 → 0.839) at
+  identical recall — the smallest defensible component in the stack.
+- **The latency column is noise at n=2.** Several standard deviations exceed
+  their means. Treat only `+ cross-encoder` (628 ±10) and `full` (283 ±77) as
+  measured; the rest needs more runs on an idle machine.
+
+**What the ablation exposed about the eval harness itself**, which matters more
+than any row above:
+
+- **Recall saturates at 1.000 for every retriever**, so the golden set cannot
+  currently justify any retrieval design decision. It needs harder questions —
+  multi-hop, near-duplicate distractors, questions whose answer sits in the
+  tail of a long document.
+- **`abstention_accuracy` is computed over exactly one case**, and
+  `thresholds.json` gates CI at `1.0`. A single question decides whether the
+  build is red.
+- **`mean_correctness` punishes correct abstentions.** The `unknown` case is
+  abstained on correctly (`abstention_accuracy` 1.0) and still scored 0.50 by
+  the correctness judge, because the judge grades the refusal text against key
+  points it was never supposed to contain.
+- **Grading over-abstains.** On `pii-to-llm` the dense-only pipeline retrieves
+  the right passage and answers correctly; the full pipeline abstains. That is
+  a real regression the aggregate numbers hide.
+
+## Limits
+
+Measured and known, not hidden. Each of these is a deliberate stopping point
+for a handbook-scale corpus, with the replacement named.
+
+**Runs as a single replica.** The BM25 index and the SLI counters both live in
+process memory. A `bm25:rev` counter in Redis invalidates the snapshot when
+another process reindexes, so correctness holds across the API and the worker
+-- but every process still keeps its own copy and rebuilds it with a full
+Qdrant scroll, synchronously, inside the request that noticed the change.
+`Pipeline.warm()` moves that cost to startup; it does not remove it. Past a few
+tens of thousands of chunks the rebuild belongs in a background task, or the
+sparse index belongs in Qdrant alongside the dense one.
+
+**`/api/v1/metrics` is per-process.** With more than one replica each pod
+reports only its own traffic. Horizontal scaling needs the counters exported to
+Prometheus rather than summarised in the app.
+
+**No authentication.** Query, upload, and delete are all open, and CORS is
+`*`. This is a demo deployment, not a hardened one. Adding auth also means
+keying the semantic cache per tenant: today `qa:` keys hash the question text
+alone, so two users asking the same thing would share an answer.
+
+**The semantic cache scans linearly.** A miss walks up to 200 recent entries
+with two Redis round trips each before falling through to the graph. A second
+Qdrant collection is the obvious replacement once that cost matters.
+
+**The cross-encoder downloads at first use.** `ENABLE_CROSS_ENCODER` is off in
+`infra/k8s/atlas.yaml` because the model is fetched from HuggingFace on the
+first request, which needs egress and adds ~12s to that request. Bake the
+weights into the image before turning it on.
+
+**Redis and Qdrant can still diverge.** Redis holds the document catalogue and
+now runs with AOF on a PVC, so a restart no longer empties it. There is still
+no reconciliation job: if the two stores disagree, uploaded documents can leave
+orphaned vectors that nothing points at.
 
 ## Sample corpus
 
