@@ -8,6 +8,7 @@ import structlog
 from fastapi import HTTPException
 
 from app.config import settings
+from app.metrics import RATE_LIMITED
 
 log = structlog.get_logger()
 
@@ -80,6 +81,7 @@ async def enforce_rate_limit(redis_client: Any, principal: str) -> None:
         # Two windows of slack so the key outlives its own window under clock skew.
         await redis_client.expire(key, 120)
     if used > limit:
+        RATE_LIMITED.labels(principal=principal).inc()
         raise HTTPException(
             status_code=429,
             detail=f"rate limit exceeded: {limit} requests/minute",

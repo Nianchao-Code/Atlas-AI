@@ -7,6 +7,8 @@ from typing import Any
 
 import redis.asyncio as redis
 
+from app.metrics import CACHE_HITS
+
 
 def _percentile(values: list[float], p: float) -> float:
     if not values:
@@ -103,6 +105,7 @@ class Cache:
         if not raw:
             return None
         obs.embedding_cache_hits += 1
+        CACHE_HITS.labels(kind="embedding").inc()
         return json.loads(raw)
 
     async def set_embedding(self, text: str, vector: list[float]) -> None:

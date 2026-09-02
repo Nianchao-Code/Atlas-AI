@@ -10,7 +10,7 @@ from typing import Annotated
 import structlog
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import ORJSONResponse, StreamingResponse
+from fastapi.responses import ORJSONResponse, Response, StreamingResponse
 
 from app.auth import (
     auth_enabled,
@@ -27,6 +27,13 @@ from app.graph import Pipeline
 from app.hybrid import BM25Index
 from app.indexer import Indexer
 from app.llm import llm_configured
+from app.metrics import (
+    AUTH_REJECTIONS,
+    INDEX_JOBS,
+    observe_query,
+    render as render_metrics,
+    set_corpus_size,
+)
 from app.models import DocumentRecord, MetricsSnapshot, QueryRequest, QueryResponse
 from app.obs import Cache, obs
 from app.redis_client import create_redis
@@ -56,22 +63,25 @@ def get_state() -> AppState:
     return state
 
 
-async def _refresh_bm25() -> None:
-    """Keep the BM25 snapshot fresh outside the request path.
+async def _background_refresh() -> None:
+    """Keep the BM25 snapshot and the corpus gauges fresh, off the request path.
 
     The worker reindexes in its own process and bumps bm25:rev; polling it here
     means no query ever pays for the rebuild. The cost is bounded staleness on
-    the sparse side, which the interval names.
+    the sparse side, which the interval names. The corpus gauges ride along
+    rather than being computed during a scrape, so scraping stays O(1).
     """
     while True:
         await asyncio.sleep(settings.bm25_refresh_seconds)
         try:
             if await state.pipeline.warm():
                 log.info("bm25.refreshed")
+            documents, chunks = await state.catalog.counts()
+            set_corpus_size(documents, chunks)
         except asyncio.CancelledError:
             raise
         except Exception:
-            log.exception("bm25.refresh_failed")
+            log.exception("background_refresh_failed")
 
 
 async def _consume_index_jobs() -> None:
@@ -85,8 +95,10 @@ async def _consume_index_jobs() -> None:
         try:
             n = await state.indexer.index_job(job)
             await state.queue.ack(envelope)
+            INDEX_JOBS.labels(outcome="indexed").inc()
             log.info("index.ok", doc_id=job.get("doc_id"), chunks=n)
         except Exception:
+            INDEX_JOBS.labels(outcome="failed").inc()
             log.exception("index.failed", doc_id=job.get("doc_id"))
             rec = await state.catalog.get(job.get("doc_id", ""))
             if rec:
@@ -111,6 +123,7 @@ async def require_principal(
     """
     principal = resolve_principal(key_from_headers(x_api_key, authorization))
     if principal is None:
+        AUTH_REJECTIONS.inc()
         raise HTTPException(
             status_code=401,
             detail="missing or invalid API key",
@@ -142,7 +155,7 @@ async def lifespan(app: FastAPI):
         await state.pipeline.warm()
     except Exception:
         log.warning("bm25.rebuild_skipped")
-    state.refresh_task = asyncio.create_task(_refresh_bm25())
+    state.refresh_task = asyncio.create_task(_background_refresh())
     if settings.embedded_worker:
         state.worker_task = asyncio.create_task(_consume_index_jobs())
     yield
@@ -250,6 +263,14 @@ async def query(req: QueryRequest, s: StateDep, principal: PrincipalDep):
         prompt_tokens=payload["prompt_tokens"],
         cache_hit=payload["cache_hit"],
     )
+    observe_query(
+        retrieval_ms=payload["retrieval_ms"],
+        prompt_tokens=payload["prompt_tokens"],
+        cache_hit=payload["cache_hit"],
+        abstained=bool(payload.get("abstained")),
+        blocked=bool(payload.get("blocked")),
+        faithfulness=payload.get("faithfulness"),
+    )
     return payload
 
 
@@ -266,6 +287,14 @@ async def query_stream(req: QueryRequest, s: StateDep, principal: PrincipalDep):
                     prompt_tokens=int(data.get("prompt_tokens") or 0),
                     cache_hit=bool(data.get("cache_hit")),
                 )
+                observe_query(
+                    retrieval_ms=float(data.get("retrieval_ms") or 0),
+                    prompt_tokens=int(data.get("prompt_tokens") or 0),
+                    cache_hit=bool(data.get("cache_hit")),
+                    abstained=bool(data.get("abstained")),
+                    blocked=bool(data.get("blocked")),
+                    faithfulness=data.get("faithfulness"),
+                )
             yield f"event: {evt['type']}\ndata: {json.dumps(evt['data'], ensure_ascii=False)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
@@ -277,6 +306,19 @@ async def eval_run(s: StateDep, principal: PrincipalDep, limit: int | None = Non
         return await run_eval(s.pipeline, limit=limit)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/metrics")
+async def prometheus_metrics():
+    """Scrape endpoint, deliberately unauthenticated.
+
+    It is not proxied by the frontend nginx, so it is reachable only from
+    inside the cluster, where the scraper lives and where an API key would be
+    one more secret to distribute for no gain. It carries no question text and
+    no answers -- see app/metrics.py for what is and is not labelled.
+    """
+    payload, content_type = render_metrics()
+    return Response(content=payload, media_type=content_type)
 
 
 @app.get("/api/v1/metrics", response_model=MetricsSnapshot)

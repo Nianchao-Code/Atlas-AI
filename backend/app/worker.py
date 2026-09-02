@@ -7,6 +7,7 @@ import structlog
 
 from app.config import settings
 from app.hybrid import BM25Index
+from app.metrics import INDEX_JOBS, set_corpus_size
 from app.indexer import Indexer
 from app.obs import Cache
 from app.redis_client import create_redis
@@ -18,6 +19,14 @@ log = structlog.get_logger()
 
 async def run_worker() -> None:
     logging.basicConfig(level=settings.log_level)
+    # The worker serves no HTTP, so without its own listener its counters are
+    # unscrapeable and index throughput is invisible. Every process needs its
+    # own target; Prometheus does the summing.
+    if settings.metrics_port:
+        from prometheus_client import start_http_server
+
+        start_http_server(settings.metrics_port)
+        log.info("metrics.listening", port=settings.metrics_port)
     r = create_redis()
     cache = Cache(r)
     vectors = VectorStore()
@@ -37,8 +46,11 @@ async def run_worker() -> None:
                     try:
                         n = await indexer.index_job(job)
                         await queue.ack(envelope)
+                        INDEX_JOBS.labels(outcome="indexed").inc()
+                        set_corpus_size(*await catalog.counts())
                         log.info("worker.indexed", doc_id=job.get("doc_id"), chunks=n)
                     except Exception:
+                        INDEX_JOBS.labels(outcome="failed").inc()
                         log.exception("worker.failed", doc_id=job.get("doc_id"))
                         rec = await catalog.get(job.get("doc_id", ""))
                         if rec:

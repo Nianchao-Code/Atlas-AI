@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     # retrieval can be this far behind an ingest; dense retrieval sees it at
     # once, because that lives in Qdrant rather than in process memory.
     bm25_refresh_seconds: float = 2.0
+    # Port the worker exposes its scrape endpoint on. The API serves /metrics
+    # from its own FastAPI app and ignores this. 0 disables.
+    metrics_port: int = 9100
     # Same-origin in the container image (nginx proxies /api), so this only
     # needs the Vite dev server.
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
