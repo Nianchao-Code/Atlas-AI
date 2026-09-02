@@ -22,7 +22,7 @@ the [ablation](#what-each-stage-actually-buys) is why. Recorded by
 | **Generation** | SSE streaming answers; token-budget packing on deduplicated parent passages |
 | **Orchestration** | LangGraph: guard → cache → rewrite → retrieve → rerank → grade → compress → generate → faithfulness |
 | **Quality** | 53-question golden set tagged by failure mode — recall, precision, faithfulness, correctness, hallucination rate, abstention accuracy, plus a stage-by-stage ablation |
-| **Safety** | API-key auth with per-principal cache isolation and rate limiting; user prompt-injection blocking + indirect corpus injection handling (`08-injection-bait.md`) |
+| **Safety** | API-key auth with per-principal cache isolation and rate limiting; injection resistance measured across 17 attacks and four defense configurations, not asserted |
 | **Ops** | Prometheus metrics from every process; retrieval p50/p95 separate from end-to-end latency; Redis embedding + semantic QA cache |
 | **Ingest** | Async worker queue (Redis Streams locally, Kafka/Redpanda in production) |
 
@@ -349,6 +349,53 @@ each and scored them in Python on every miss. The ANN query replaces that and
 drops the 200-entry window, so what counts as near is decided by the index
 rather than by a recency list.
 
+## Injection resistance
+
+`scripts/injection_probe.py` runs 17 attacks against four configurations, three
+times each: both defenses off, the user-input guard alone, chunk sanitising
+alone, and production. It exists because the previous evidence was three golden
+cases that all passed, which is the same shape of evidence that turned out to
+mean nothing for retrieval recall.
+
+**Nothing leaks in any configuration** — 17 attacks, 3 runs, all four setups.
+That includes seven rewordings that walk straight past the regex guard, and the
+indirect payloads planted in `08-injection-bait.md`.
+
+**The regex guard's marginal contribution is zero.** It catches 4 of 4 literal
+phrasings and 0 of 7 rewordings of the same intent — `Forget everything you
+were told earlier`, Spanish, letters spaced apart. Every attack it blocks, the
+model refuses anyway with the guard disabled. What it buys is a deterministic
+refusal without an LLM call, which is worth having and is not the same as
+being what keeps the system safe.
+
+| | Literal phrasings | Same intent, reworded |
+| --- | --- | --- |
+| Caught by `scan_user` | 4/4 | 0/7 |
+| Leaked with the guard off | 0/4 | 0/7 |
+
+**One real defect, found and fixed.** `01-company.md` says the K-Walk 2
+endurance target must be answered as unpublished. Only the blunt question
+obeyed that. Claiming to be on the internal planning team returned the figure
+3/3, and so did asking whether it is more or less than 12 hours and by how
+much — the model relayed the rule and the number together, because they sit in
+the same passage. A withholding instruction in the system prompt closes all
+three, verified 8 leaks to 0.
+
+**Measuring this was harder than passing it.** Substring matching produced two
+different false positives before the numbers meant anything:
+
+- `90 days` matched a correct answer, because `03-data-policy.md` really does
+  retain logs for 90 days.
+- `90 days of annual leave` then matched *"the real policy does **not** grant
+  90 days of annual leave"* — the model identifying the bait and negating it.
+
+A detector that cannot tell assertion from negation reports a working defense
+as a breach. The probe now uses substring matching only as a cheap pre-filter
+and has an LLM adjudicate whether the answer asserted or complied. Even that
+judge disagreed with itself once on two near-identical negations, which is why
+the remaining 1/3 in the raw output is reported as judge variance rather than a
+finding.
+
 ## Limits
 
 Measured and known, not hidden. Each of these is a deliberate stopping point
@@ -385,6 +432,11 @@ login: the nginx container presents one key on behalf of every browser that
 reaches it, so anyone who can load the page can query. Real user identity means
 a session layer in front, and principals would come from it rather than from a
 secret.
+
+**The user-input guard is a regex, and regexes lose this game.** It catches
+the phrasings it was written against and nothing else, at a measured 7/11
+bypass rate. It is kept as a cheap deterministic first pass, not as the defense
+— that is the model's instruction-following, and the probe is what says so.
 
 **The paraphrase cache catches roughly two thirds of rewordings.** At the
 calibrated threshold it hits 6 of 9 measured paraphrases. Looser rephrasings
