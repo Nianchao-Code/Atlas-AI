@@ -1,9 +1,12 @@
 from app.evaluate import _hit
-from app.graph import Pipeline, RAGState, _keyword_query
+from app.graph import Pipeline, _keyword_query
 
 
 def test_keyword_query_strips_hyde():
-    assert _keyword_query("contract KV-2025-441\nHypothetical answer here.", "original") == "contract KV-2025-441"
+    assert (
+        _keyword_query("contract KV-2025-441\nHypothetical answer here.", "original")
+        == "contract KV-2025-441"
+    )
     assert _keyword_query("", "original") == "original"
     assert _keyword_query(None, "original") == "original"
 

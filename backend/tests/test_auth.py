@@ -5,14 +5,10 @@ FastAPI itself rather than calling a function directly, so they also cover the
 wiring: a route that forgets the dependency shows up as a 200 where a 401 is
 expected.
 """
+
 from __future__ import annotations
 
-import json
-
 import pytest
-from fastapi import HTTPException
-from fastapi.testclient import TestClient
-
 from app.auth import (
     DEV_PRINCIPAL,
     enforce_rate_limit,
@@ -22,11 +18,14 @@ from app.auth import (
 )
 from app.config import settings
 from app.obs import Cache
+from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 KEYS = "alice:secret-alice,bob:secret-bob"
 
 
 # --------------------------------------------------------------- parsing ---
+
 
 def test_parse_api_keys_maps_secret_to_principal():
     assert parse_api_keys(KEYS) == {"secret-alice": "alice", "secret-bob": "bob"}
@@ -45,6 +44,7 @@ def test_parse_api_keys_secret_may_contain_colons():
 
 
 # ------------------------------------------------------------- resolution ---
+
 
 def test_no_keys_configured_means_dev_principal(monkeypatch):
     monkeypatch.setattr(settings, "api_keys", "")
@@ -72,6 +72,7 @@ def test_key_from_headers_accepts_both_schemes():
 
 
 # ------------------------------------------------------ cache isolation ---
+
 
 class _FakeRedis:
     def __init__(self) -> None:
@@ -117,6 +118,7 @@ async def test_semantic_cache_is_scoped_per_principal():
 
 # ---------------------------------------------------------- rate limiting ---
 
+
 async def test_rate_limit_trips_after_the_configured_count(monkeypatch):
     monkeypatch.setattr(settings, "rate_limit_per_minute", 3)
     r = _FakeRedis()
@@ -147,6 +149,7 @@ async def test_rate_limit_disabled_at_zero(monkeypatch):
 
 
 # -------------------------------------------------------------- the API ---
+
 
 @pytest.fixture
 def client(monkeypatch):
@@ -185,9 +188,10 @@ def test_wrong_key_is_rejected(client):
 
 def test_valid_key_is_accepted_in_either_header(client):
     assert client.get("/api/v1/metrics", headers={"X-API-Key": "secret-alice"}).status_code == 200
-    assert client.get(
-        "/api/v1/metrics", headers={"Authorization": "Bearer secret-bob"}
-    ).status_code == 200
+    assert (
+        client.get("/api/v1/metrics", headers={"Authorization": "Bearer secret-bob"}).status_code
+        == 200
+    )
 
 
 # --------------------------------------------------- settings binding ---
@@ -195,6 +199,7 @@ def test_valid_key_is_accepted_in_either_header(client):
 # exercise the environment -> settings step. A deployment once shipped with
 # ATLAS_API_KEYS set, auth silently off, and the whole suite green, because
 # pydantic-settings was binding the field to API_KEYS instead.
+
 
 def test_atlas_api_keys_env_var_binds_to_settings(monkeypatch):
     from app.config import Settings

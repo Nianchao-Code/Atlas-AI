@@ -5,13 +5,13 @@ hit does not land in the retrieval histogram, that /metrics is reachable
 without a key while every /api/v1 route is not, and that no series carries a
 question or an answer.
 """
+
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
-
 from app import metrics as m
 from app.config import settings
+from fastapi.testclient import TestClient
 
 KEYS = "alice:secret-alice"
 
@@ -25,6 +25,7 @@ def _hist_count(hist) -> float:
 
 
 # ------------------------------------------------------------- outcomes ---
+
 
 def test_answered_query_records_latency_and_tokens():
     before_sum, before_count = _hist_count(m.RETRIEVAL_SECONDS)
@@ -80,6 +81,7 @@ def test_faithfulness_is_recorded_only_when_scored():
 
 # --------------------------------------------------------------- exposition ---
 
+
 def test_render_is_prometheus_text_format():
     m.set_corpus_size(8, 27)
     payload, content_type = m.render()
@@ -92,6 +94,7 @@ def test_render_is_prometheus_text_format():
 
 
 # --------------------------------------------------------------- the route ---
+
 
 @pytest.fixture
 def client(monkeypatch):

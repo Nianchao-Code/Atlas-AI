@@ -4,6 +4,7 @@ That combination is only safe if two things hold, so both are pinned here: a
 query reads one coherent snapshot even when a refresh lands mid-search, and
 warm() rebuilds once per revision no matter how many callers race it.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -29,6 +30,7 @@ def _hit(chunk_id: str) -> Hit:
 
 # ------------------------------------------------------------- atomicity ---
 
+
 def test_rebuild_publishes_a_coherent_snapshot():
     idx = BM25Index()
     idx.rebuild([_hit("a"), _hit("b")])
@@ -49,9 +51,7 @@ def test_search_is_immune_to_a_refresh_landing_mid_query():
             idx.rebuild([_hit("new-x")])
             return [2.0, 1.0]
 
-    idx._snap = _Snapshot(
-        ids=original.ids, hits=original.hits, bm25=_ScorerThatTriggersARefresh()
-    )
+    idx._snap = _Snapshot(ids=original.ids, hits=original.hits, bm25=_ScorerThatTriggersARefresh())
 
     out = idx.search("leave policy", k=2)
 
@@ -69,6 +69,7 @@ def test_empty_corpus_searches_to_nothing():
 
 
 # ------------------------------------------------------------------ warm ---
+
 
 class _Redis:
     def __init__(self, rev: str | None) -> None:

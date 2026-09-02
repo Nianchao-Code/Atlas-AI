@@ -7,6 +7,7 @@ previous version stored the embedding of the rewritten query plus its HyDE
 paragraph, so the same question asked twice scored 0.817 against its own entry
 and never hit.
 """
+
 from __future__ import annotations
 
 import json
@@ -69,6 +70,7 @@ def _cache(points=None) -> tuple[QACache, _FakeQdrant]:
 
 # ------------------------------------------------------------- point ids ---
 
+
 def test_point_id_is_deterministic_and_principal_scoped():
     a = _point_id("alice", "How many leave days?")
     assert a == _point_id("alice", "  how many leave days?  ")  # normalised
@@ -84,6 +86,7 @@ def test_same_question_overwrites_rather_than_accumulating():
 
 
 # --------------------------------------------------------------- lookups ---
+
 
 def test_lookup_filters_by_principal_and_expiry():
     cache, fake = _cache()
@@ -119,6 +122,7 @@ def test_malformed_entry_is_treated_as_a_miss():
 
 
 # ---------------------------------------------------------------- writes ---
+
 
 def test_remember_stores_principal_and_an_expiry():
     cache, fake = _cache()

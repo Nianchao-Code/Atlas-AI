@@ -11,7 +11,9 @@ from app.vectors import VectorStore
 
 
 class Indexer:
-    def __init__(self, cache: Cache, vectors: VectorStore, catalog: Catalog, bm25: BM25Index) -> None:
+    def __init__(
+        self, cache: Cache, vectors: VectorStore, catalog: Catalog, bm25: BM25Index
+    ) -> None:
         self.cache = cache
         self.vectors = vectors
         self.catalog = catalog
@@ -19,8 +21,6 @@ class Indexer:
 
     async def index_job(self, job: dict[str, Any]) -> int:
         from pathlib import Path
-
-        from app.models import DocumentRecord
 
         doc_id = job["doc_id"]
         rec = await self.catalog.get(doc_id)

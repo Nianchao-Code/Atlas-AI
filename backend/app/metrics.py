@@ -12,6 +12,7 @@ and the label space is bounded by the configured keys. Everywhere else a
 principal label would put an identity into series that outlive it, for a
 breakdown nobody reads.
 """
+
 from __future__ import annotations
 
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest

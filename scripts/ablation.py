@@ -10,6 +10,7 @@ Runs anywhere the backend package imports and Redis/Qdrant are reachable:
 
     python scripts/ablation.py --repeats 3 --out docs/ablation.md
 """
+
 from __future__ import annotations
 
 import argparse
@@ -47,8 +48,16 @@ class Variant:
 # Cumulative build-up, then one knock-out row. Each step adds exactly one
 # stage so a delta can be attributed to that stage and nothing else.
 VARIANTS = [
-    Variant("Dense only", "vector search, no fusion", PipelineConfig(sparse=False, rerank=False, grade=False)),
-    Variant("BM25 only", "lexical search, no fusion", PipelineConfig(dense=False, rerank=False, grade=False)),
+    Variant(
+        "Dense only",
+        "vector search, no fusion",
+        PipelineConfig(sparse=False, rerank=False, grade=False),
+    ),
+    Variant(
+        "BM25 only",
+        "lexical search, no fusion",
+        PipelineConfig(dense=False, rerank=False, grade=False),
+    ),
     Variant("Hybrid + RRF", "dense + BM25 fused", PipelineConfig(rerank=False, grade=False)),
     Variant("+ cross-encoder", "reranked top candidates", PipelineConfig(grade=False)),
     Variant("+ LLM grading (full)", "corrective loop, abstains", PipelineConfig()),

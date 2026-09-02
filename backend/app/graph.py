@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Literal, TypedDict
@@ -83,7 +82,7 @@ class PipelineConfig:
     sanitize: bool = True
 
     @classmethod
-    def from_settings(cls) -> "PipelineConfig":
+    def from_settings(cls) -> PipelineConfig:
         return cls(rerank=settings.enable_cross_encoder)
 
 
@@ -120,7 +119,9 @@ class Pipeline:
         g.add_node("faith", self.faith)
         g.add_node("abstain", self.abstain)
         g.set_entry_point("guard")
-        g.add_conditional_edges("guard", self._after_guard, {"cache": "cache", "abstain": "abstain"})
+        g.add_conditional_edges(
+            "guard", self._after_guard, {"cache": "cache", "abstain": "abstain"}
+        )
         g.add_conditional_edges("cache", self._after_cache, {"end": END, "rewrite": "rewrite"})
         g.add_edge("rewrite", "retrieve")
         g.add_edge("retrieve", "rerank")
@@ -132,7 +133,9 @@ class Pipeline:
         )
         g.add_edge("compress", "generate")
         g.add_edge("generate", "faith")
-        g.add_conditional_edges("faith", self._after_faith, {"end": END, "generate": "generate", "abstain": "abstain"})
+        g.add_conditional_edges(
+            "faith", self._after_faith, {"end": END, "generate": "generate", "abstain": "abstain"}
+        )
         g.add_edge("abstain", END)
         return g.compile()
 
@@ -298,7 +301,7 @@ class Pipeline:
             tracer.span("grade", "heuristic sufficient")
             return {"grade": "sufficient"}
         preview = "\n\n".join(
-            f"[{i+1}] {self._sanitize(h.text[:500])}" for i, h in enumerate(hits[:8])
+            f"[{i + 1}] {self._sanitize(h.text[:500])}" for i, h in enumerate(hits[:8])
         )
         data = await chat_json(
             system=(
@@ -316,8 +319,13 @@ class Pipeline:
             except (ValueError, IndexError):
                 continue
         sufficient = bool(data.get("sufficient")) and bool(kept)
-        tracer.span("grade", "sufficient" if sufficient else "insufficient", reason=data.get("reason", ""))
-        return {"grade": "sufficient" if sufficient else "insufficient", "hits": kept or hits[: settings.rerank_k]}
+        tracer.span(
+            "grade", "sufficient" if sufficient else "insufficient", reason=data.get("reason", "")
+        )
+        return {
+            "grade": "sufficient" if sufficient else "insufficient",
+            "hits": kept or hits[: settings.rerank_k],
+        }
 
     async def compress(self, state: RAGState) -> dict[str, Any]:
         tracer: Tracer = state["tracer"]
@@ -338,7 +346,12 @@ class Pipeline:
             extract = packed[0].parent_text[:600] if packed else "The knowledge base is empty."
             answer = f"(No model API key; returning a retrieved extract)\n{extract}"
             tracer.span("generate", "extractive fallback")
-            return {"answer": answer, "prompt_tokens": tokens.count(user), "completion_tokens": 0, "gen_retries": 0}
+            return {
+                "answer": answer,
+                "prompt_tokens": tokens.count(user),
+                "completion_tokens": 0,
+                "gen_retries": 0,
+            }
         text, pt, ct = await chat_text(system=system, user=user)
         tracer.span("generate", f"tokens={pt}+{ct}", attempt=gen_retries)
         return {
@@ -401,7 +414,9 @@ class Pipeline:
                 "total_ms": tracer.total_ms,
                 "prompt_tokens": int(result.get("prompt_tokens") or 0),
                 "completion_tokens": int(result.get("completion_tokens") or 0),
-                "tokens_saved_vs_naive": int(result.get("tokens_saved_vs_naive") or result.get("tokens_saved") or 0),
+                "tokens_saved_vs_naive": int(
+                    result.get("tokens_saved_vs_naive") or result.get("tokens_saved") or 0
+                ),
                 "cache_hit": True,
                 "rewritten_query": result.get("rewritten_query"),
                 "faithfulness": result.get("faithfulness"),
@@ -440,9 +455,7 @@ class Pipeline:
             await self.cache.set_semantic(principal, question, payload)
             vec = result.get("question_vec")
             if vec and self.qa_cache is not None:
-                await asyncio.to_thread(
-                    self.qa_cache.remember, principal, question, vec, payload
-                )
+                await asyncio.to_thread(self.qa_cache.remember, principal, question, vec, payload)
         return payload
 
     def _build_generate_prompt(self, state: RAGState) -> tuple[str, str, int]:
@@ -543,7 +556,9 @@ class Pipeline:
                 "total_ms": tracer.total_ms,
                 "prompt_tokens": int(state.get("prompt_tokens") or 0),
                 "completion_tokens": int(state.get("completion_tokens") or 0),
-                "tokens_saved_vs_naive": int(state.get("tokens_saved_vs_naive") or state.get("tokens_saved") or 0),
+                "tokens_saved_vs_naive": int(
+                    state.get("tokens_saved_vs_naive") or state.get("tokens_saved") or 0
+                ),
                 "cache_hit": True,
                 "rewritten_query": state.get("rewritten_query"),
                 "faithfulness": state.get("faithfulness"),
@@ -609,7 +624,5 @@ class Pipeline:
             await self.cache.set_semantic(principal, question, payload)
             vec = state.get("question_vec")
             if vec and self.qa_cache is not None:
-                await asyncio.to_thread(
-                    self.qa_cache.remember, principal, question, vec, payload
-                )
+                await asyncio.to_thread(self.qa_cache.remember, principal, question, vec, payload)
         yield {"type": "done", "data": payload}

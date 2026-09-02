@@ -13,6 +13,7 @@ the same question asked twice scored 0.817 against its own cache entry, under
 a 0.92 threshold, so the paraphrase path had never served a hit. Both sides now
 embed the raw question.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -64,7 +65,9 @@ class QACache:
             field_schema=models.PayloadSchemaType.INTEGER,
         )
 
-    def nearest(self, principal: str, vector: list[float], threshold: float) -> dict[str, Any] | None:
+    def nearest(
+        self, principal: str, vector: list[float], threshold: float
+    ) -> dict[str, Any] | None:
         """Closest cached answer for this principal above `threshold`.
 
         The principal filter is a `must`, not a re-ranking step: an answer is

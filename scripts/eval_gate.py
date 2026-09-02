@@ -4,6 +4,7 @@
 Smoke mode (default in CI): no API key required, cross-encoder disabled.
 Full mode: requires OPENAI_API_KEY and runs LLM-as-judge metrics.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -15,7 +16,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
-import redis.asyncio as redis
 
 from app.config import settings
 from app.evaluate import run_eval
@@ -43,7 +43,9 @@ async def seed_corpus(catalog: Catalog, queue: IndexQueue, indexer: Indexer) -> 
         doc_id = f"seed-{path.stem}"[:24]
         from app.models import DocumentRecord
 
-        rec = DocumentRecord(id=doc_id, filename=path.name, bytes=path.stat().st_size, status="queued")
+        rec = DocumentRecord(
+            id=doc_id, filename=path.name, bytes=path.stat().st_size, status="queued"
+        )
         await catalog.upsert(rec)
         await indexer.index_job({"doc_id": doc_id, "filename": path.name, "path": str(path)})
 
@@ -74,16 +76,46 @@ async def run_gate(mode: str) -> int:
     await r.aclose()
 
     checks = [
-        ("retrieval_recall", report.retrieval_recall, thresholds.get("min_retrieval_recall", 0), "min"),
-        ("abstention_accuracy", report.abstention_accuracy, thresholds.get("min_abstention_accuracy", 0), "min"),
-        ("hallucination_rate", report.hallucination_rate, thresholds.get("max_hallucination_rate", 1), "max"),
+        (
+            "retrieval_recall",
+            report.retrieval_recall,
+            thresholds.get("min_retrieval_recall", 0),
+            "min",
+        ),
+        (
+            "abstention_accuracy",
+            report.abstention_accuracy,
+            thresholds.get("min_abstention_accuracy", 0),
+            "min",
+        ),
+        (
+            "hallucination_rate",
+            report.hallucination_rate,
+            thresholds.get("max_hallucination_rate", 1),
+            "max",
+        ),
     ]
     if mode == "full":
         checks.extend(
             [
-                ("mean_faithfulness", report.mean_faithfulness, thresholds["min_mean_faithfulness"], "min"),
-                ("mean_correctness", report.mean_correctness, thresholds["min_mean_correctness"], "min"),
-                ("token_reduction_pct", report.token_reduction_pct, thresholds["min_token_reduction_pct"], "min"),
+                (
+                    "mean_faithfulness",
+                    report.mean_faithfulness,
+                    thresholds["min_mean_faithfulness"],
+                    "min",
+                ),
+                (
+                    "mean_correctness",
+                    report.mean_correctness,
+                    thresholds["min_mean_correctness"],
+                    "min",
+                ),
+                (
+                    "token_reduction_pct",
+                    report.token_reduction_pct,
+                    thresholds["min_token_reduction_pct"],
+                    "min",
+                ),
             ]
         )
 
@@ -108,7 +140,9 @@ async def run_gate(mode: str) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--smoke", action="store_true", help="Smoke thresholds, no LLM required")
-    parser.add_argument("--full", action="store_true", help="Full thresholds, requires OPENAI_API_KEY")
+    parser.add_argument(
+        "--full", action="store_true", help="Full thresholds, requires OPENAI_API_KEY"
+    )
     args = parser.parse_args()
     mode = "full" if args.full else "smoke"
     raise SystemExit(asyncio.run(run_gate(mode)))

@@ -7,8 +7,8 @@ import structlog
 
 from app.config import settings
 from app.hybrid import BM25Index
-from app.metrics import INDEX_JOBS, set_corpus_size
 from app.indexer import Indexer
+from app.metrics import INDEX_JOBS, set_corpus_size
 from app.obs import Cache
 from app.redis_client import create_redis
 from app.store_docs import Catalog, IndexQueue
