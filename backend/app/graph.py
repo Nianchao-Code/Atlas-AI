@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -92,6 +93,8 @@ class Pipeline:
         self.vectors = vectors
         self.bm25 = bm25
         self.config = config or PipelineConfig.from_settings()
+        self._bm25_rev: str | None = None
+        self._warm_lock = asyncio.Lock()
         self.graph = self._build()
 
     def _build(self):
@@ -202,19 +205,28 @@ class Pipeline:
         tracer.span("rewrite", query, retries=retries)
         return {"rewritten": query + "\n" + hyde, "retries": retries}
 
-    async def warm(self) -> None:
-        """Refresh the BM25 snapshot if another process has reindexed.
+    async def warm(self) -> bool:
+        """Rebuild the BM25 snapshot if another process has reindexed.
 
-        Callable ahead of serving so the first query after startup or after an
-        ingest does not pay for a full corpus scroll inside the request. This
-        is a mitigation, not a fix: the rebuild is still O(corpus) and still
-        synchronous, which is fine at handbook scale and would not be at
-        millions of chunks.
+        Returns True when a rebuild actually happened.
+
+        The scroll and the index build are both synchronous and both O(corpus),
+        so they run in a worker thread: on the event loop they stall every
+        other in-flight request, which is how a cold rebuild once put 19s into
+        a p95. Serving does not call this at all any more -- main.py warms once
+        at startup and then refreshes on a timer.
         """
         rev = await self.cache.r.get("bm25:rev")
-        if rev != getattr(self, "_bm25_rev", None):
-            self.bm25.rebuild(self.vectors.scroll_all())
+        if rev == self._bm25_rev:
+            return False
+        async with self._warm_lock:
+            # Another waiter may have rebuilt while this one queued.
+            if rev == self._bm25_rev:
+                return False
+            hits = await asyncio.to_thread(self.vectors.scroll_all)
+            await asyncio.to_thread(self.bm25.rebuild, hits)
             self._bm25_rev = rev
+            return True
 
     async def retrieve(self, state: RAGState) -> dict[str, Any]:
         import time
@@ -222,7 +234,6 @@ class Pipeline:
         tracer: Tracer = state["tracer"]
         q = state.get("rewritten") or state["question"]
         t0 = time.perf_counter()
-        await self.warm()
         vecs = await embed_texts([q])
         bm25_q = _keyword_query(state.get("rewritten"), state["question"])
         dense = self.vectors.search(vecs[0], settings.retrieve_k) if self.config.dense else []

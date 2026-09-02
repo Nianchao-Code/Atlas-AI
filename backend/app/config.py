@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     # the service starts with auth off while looking configured.
     api_keys: str = Field("", validation_alias="ATLAS_API_KEYS")
     rate_limit_per_minute: int = 60
+    # How often the API re-checks whether the worker has reindexed. Sparse
+    # retrieval can be this far behind an ingest; dense retrieval sees it at
+    # once, because that lives in Qdrant rather than in process memory.
+    bm25_refresh_seconds: float = 2.0
     # Same-origin in the container image (nginx proxies /api), so this only
     # needs the Vite dev server.
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"

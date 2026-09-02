@@ -46,6 +46,7 @@ class AppState:
     pipeline: Pipeline
     indexer: Indexer
     worker_task: asyncio.Task | None = None
+    refresh_task: asyncio.Task | None = None
 
 
 state = AppState()
@@ -53,6 +54,24 @@ state = AppState()
 
 def get_state() -> AppState:
     return state
+
+
+async def _refresh_bm25() -> None:
+    """Keep the BM25 snapshot fresh outside the request path.
+
+    The worker reindexes in its own process and bumps bm25:rev; polling it here
+    means no query ever pays for the rebuild. The cost is bounded staleness on
+    the sparse side, which the interval names.
+    """
+    while True:
+        await asyncio.sleep(settings.bm25_refresh_seconds)
+        try:
+            if await state.pipeline.warm():
+                log.info("bm25.refreshed")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("bm25.refresh_failed")
 
 
 async def _consume_index_jobs() -> None:
@@ -123,9 +142,12 @@ async def lifespan(app: FastAPI):
         await state.pipeline.warm()
     except Exception:
         log.warning("bm25.rebuild_skipped")
+    state.refresh_task = asyncio.create_task(_refresh_bm25())
     if settings.embedded_worker:
         state.worker_task = asyncio.create_task(_consume_index_jobs())
     yield
+    if state.refresh_task:
+        state.refresh_task.cancel()
     if state.worker_task:
         state.worker_task.cancel()
     await state.queue.close()
