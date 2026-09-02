@@ -10,10 +10,17 @@ _cross_encoder = None
 
 
 def _load_cross_encoder():
+    """Import lazily: sentence-transformers is an optional extra, and the base
+    image does not carry it."""
     global _cross_encoder
     if _cross_encoder is None:
-        from sentence_transformers import CrossEncoder
-
+        try:
+            from sentence_transformers import CrossEncoder
+        except ImportError as exc:  # not installed rather than not downloadable
+            raise RuntimeError(
+                "ENABLE_CROSS_ENCODER is on but sentence-transformers is not "
+                'installed. Install the extra: pip install -e ".[rerank]"'
+            ) from exc
         _cross_encoder = CrossEncoder(settings.cross_encoder_model)
     return _cross_encoder
 
@@ -35,8 +42,10 @@ def cross_encoder_rerank(
         return hits[: top_k or settings.rerank_k]
     try:
         model = _load_cross_encoder()
-    except Exception:
-        log.warning("rerank.model_unavailable")
+    except Exception as exc:
+        # Passing the candidates through unranked is the right degradation:
+        # the ablation says this stage changes nothing on this corpus anyway.
+        log.warning("rerank.model_unavailable", error=str(exc)[:160])
         return hits[: top_k or settings.rerank_k]
 
     limit = top_k or settings.rerank_k

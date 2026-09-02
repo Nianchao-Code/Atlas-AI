@@ -23,7 +23,7 @@ the [ablation](#what-each-stage-actually-buys) is why. Recorded by
 | **Orchestration** | LangGraph: guard → cache → rewrite → retrieve → rerank → grade → compress → generate → faithfulness |
 | **Quality** | 53-question golden set tagged by failure mode — recall, precision, faithfulness, correctness, hallucination rate, abstention accuracy, plus a stage-by-stage ablation |
 | **Safety** | API-key auth with per-principal cache isolation and rate limiting; injection resistance measured across 17 attacks and four defense configurations, not asserted |
-| **Ops** | Load-tested to a measured ceiling (592 rps cached, no head-of-line blocking); Prometheus metrics from every process; retrieval p50/p95 separate from end-to-end latency; Redis embedding + semantic QA cache |
+| **Ops** | 521MB image; load-tested to a measured ceiling (592 rps cached, no head-of-line blocking); Prometheus metrics from every process; retrieval p50/p95 separate from end-to-end latency; Redis embedding + semantic QA cache |
 | **Ingest** | Async worker queue (Redis Streams locally, Kafka/Redpanda in production) |
 
 ## What the measurements said
@@ -48,6 +48,11 @@ unflattering. Those are the ones worth reading first.
   both defenses disabled. The regex catches 4 of 4 literal phrasings and 0 of 7
   rewordings of the same intent. What keeps the system safe is the model's
   instruction following; the guard buys a cheap deterministic refusal.
+
+- **[The image was 94% dependencies for a disabled feature.](#what-each-stage-actually-buys)**
+  `sentence-transformers` pulled in torch, triton and 2.7GB of CUDA wheels --
+  into a CPU-only container, for a reranker the ablation had already measured
+  at zero. Making it an optional extra took the image from 8.69GB to 521MB.
 
 - **[No head-of-line blocking under load.](#throughput)** Not one of 2,360
   concurrent requests crossed 100ms while a 5.2-second request was in flight —
@@ -257,7 +262,12 @@ Aggregates hide where the differences live, so the same runs by question type
   displace passages the dense ranker had already ordered correctly.
 - **The cross-encoder does nothing here.** Identical correctness to plain
   hybrid, marginally worse precision, and it adds latency. On this corpus it is
-  pure cost, and `ENABLE_CROSS_ENCODER` stays off in the deployed config.
+  pure cost, so it is off by default and its dependency is an optional extra:
+  `sentence-transformers` was dragging torch, triton and 2.7GB of CUDA wheels
+  into a CPU-only image for it. Removing that from the default build took the
+  image from **8.69GB to 521MB**, and the layer the cluster stores from 2.99GB
+  to 117MB. Install `.[rerank]` to turn it back on, ideally against the CPU
+  torch index.
 - **Grading is the stage that pays.** Context precision 0.43 → 0.83, prompt
   tokens 990 → 232 (−77%), and abstention correctness doubles (0.333 → 0.667).
 - **Grading also over-abstains.** It is the only reason `policy` falls to 0.778

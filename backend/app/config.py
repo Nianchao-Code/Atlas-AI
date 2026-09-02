@@ -34,7 +34,9 @@ class Settings(BaseSettings):
     semantic_cache_threshold: float = 0.82
     qa_cache_collection: str = "atlas_qa_cache"
 
-    enable_cross_encoder: bool = True
+    # Off by default: measured at zero benefit on this corpus, and the model
+    # needs the optional [rerank] extra. See "What each stage actually buys".
+    enable_cross_encoder: bool = False
     cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
     # "principal:secret,principal:secret". Empty disables auth entirely and

@@ -21,11 +21,16 @@ dependencies = [
   "httpx>=0.27.0",
   "orjson>=3.10.0",
   "numpy>=2.0.0",
-  "sentence-transformers>=3.0.0",
 ]
 
 [project.optional-dependencies]
 kafka = ["aiokafka>=0.12.0"]
+# The cross-encoder drags in torch, triton and 2.7GB of CUDA wheels for a
+# reranker the ablation measured at zero benefit on this corpus -- about 4.9GB
+# of a CPU-only image. Opt in when a corpus exists where it earns that, and
+# install the CPU torch build:
+#   pip install -e ".[rerank]" --extra-index-url https://download.pytorch.org/whl/cpu
+rerank = ["sentence-transformers>=3.0.0"]
 dev = ["pytest>=8.3.0", "pytest-asyncio>=0.24.0", "httpx>=0.27.0", "ruff>=0.8.0"]
 # scripts/capture_demo.py only; not needed to run or test the service.
 demo = ["playwright>=1.48.0", "pillow>=11.0.0"]
