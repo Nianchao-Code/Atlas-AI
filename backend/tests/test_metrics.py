@@ -9,9 +9,10 @@ question or an answer.
 from __future__ import annotations
 
 import pytest
+from fastapi.testclient import TestClient
+
 from app import metrics as m
 from app.config import settings
-from fastapi.testclient import TestClient
 
 KEYS = "alice:secret-alice"
 

@@ -9,6 +9,9 @@ expected.
 from __future__ import annotations
 
 import pytest
+from fastapi import HTTPException
+from fastapi.testclient import TestClient
+
 from app.auth import (
     DEV_PRINCIPAL,
     enforce_rate_limit,
@@ -18,8 +21,6 @@ from app.auth import (
 )
 from app.config import settings
 from app.obs import Cache
-from fastapi import HTTPException
-from fastapi.testclient import TestClient
 
 KEYS = "alice:secret-alice,bob:secret-bob"
 

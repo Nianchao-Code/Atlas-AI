@@ -10,6 +10,7 @@ an evidence-based abstention.
 from __future__ import annotations
 
 import pytest
+
 from app.graph import Pipeline, PipelineConfig
 from app.guard import flag_chunk, sanitize_chunk, scan_user
 from app.obs import Tracer

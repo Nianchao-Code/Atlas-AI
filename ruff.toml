@@ -14,6 +14,11 @@ ignore = [
   "B008",  # FastAPI puts Depends()/File() in argument defaults by design
 ]
 
+[lint.isort]
+# Without this `app` sorts as third-party and lands next to pytest, which is
+# both wrong and inconsistent with how the package is laid out.
+known-first-party = ["app"]
+
 [lint.per-file-ignores]
 # These scripts live outside the package and must extend sys.path before they
 # can import from it. That is the layout, not carelessness.
