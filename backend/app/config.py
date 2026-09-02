@@ -44,7 +44,13 @@ class Settings(BaseSettings):
     # to API_KEYS, silently ignores the ATLAS_API_KEYS the deployment sets, and
     # the service starts with auth off while looking configured.
     api_keys: str = Field("", validation_alias="ATLAS_API_KEYS")
-    rate_limit_per_minute: int = 60
+    # 60 was a guess, and scripts/loadtest.py showed it was the binding
+    # constraint long before the service was: one replica serves ~590 rps of
+    # cached answers and ~1 rps once the model is in the path, so 60/min
+    # rate-limited a single user reading their own follow-ups. The limit is
+    # here to bound spend, not to protect the app, so it sits well above any
+    # interactive session and well below what a runaway client could burn.
+    rate_limit_per_minute: int = 300
     # How often the API re-checks whether the worker has reindexed. Sparse
     # retrieval can be this far behind an ingest; dense retrieval sees it at
     # once, because that lives in Qdrant rather than in process memory.

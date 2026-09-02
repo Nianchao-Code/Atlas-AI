@@ -15,6 +15,8 @@ data:
   SAMPLES_DIR: /app/samples
   UPLOAD_DIR: /app/data/uploads
   ENABLE_CROSS_ENCODER: "false"
+  # Calibrated in scripts/loadtest.py; see app/config.py for why 300.
+  RATE_LIMIT_PER_MINUTE: "300"
   CHAT_MODEL: gpt-4o
   CHEAP_MODEL: gpt-4o-mini
   EMBEDDING_MODEL: text-embedding-3-small
