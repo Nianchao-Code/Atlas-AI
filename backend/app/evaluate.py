@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from statistics import quantiles
 
@@ -59,7 +60,17 @@ async def judge_correctness(question: str, answer: str, points: list[str]) -> fl
     return float(data.get("score") or 0)
 
 
-async def run_eval(pipeline: Pipeline, limit: int | None = None) -> EvalReport:
+async def run_eval(
+    pipeline: Pipeline,
+    limit: int | None = None,
+    on_case: Callable[[int, int], Awaitable[None]] | None = None,
+) -> EvalReport:
+    """Run the golden set.
+
+    `on_case` is called after each question with (done, total). It exists so a
+    caller can report progress; a four-minute run with no output is
+    indistinguishable from a hang.
+    """
     cases = load_golden()[: limit or None]
     results: list[EvalCaseResult] = []
     naive_tokens: list[int] = []
@@ -106,6 +117,8 @@ async def run_eval(pipeline: Pipeline, limit: int | None = None) -> EvalReport:
                 answer=payload["answer"][:500],
             )
         )
+        if on_case is not None:
+            await on_case(len(results), len(cases))
 
     n = len(results) or 1
     recall_cases = [r for r, c in zip(results, cases, strict=True) if c.get("expected_docs")]

@@ -23,7 +23,7 @@ the [ablation](#what-each-stage-actually-buys) is why. Recorded by
 | **Retrieval** | Parent-child chunking, dense + sparse vectors in one Qdrant collection fused server-side by RRF, cross-encoder rerank, LLM document grading |
 | **Generation** | SSE streaming answers; token-budget packing on deduplicated parent passages |
 | **Orchestration** | LangGraph: guard → cache → rewrite → retrieve → rerank → grade → compress → generate → faithfulness |
-| **Quality** | 53-question golden set tagged by failure mode — recall, precision, faithfulness, correctness, hallucination rate, abstention accuracy, plus a stage-by-stage ablation |
+| **Quality** | 53-question golden set tagged by failure mode — recall, precision, faithfulness, correctness, hallucination rate, abstention accuracy, plus a stage-by-stage ablation with a control row; runs as a background job with progress, single-flighted so two clicks are one run |
 | **Safety** | API-key auth with per-principal cache isolation and rate limiting; injection resistance measured across 17 attacks and four defense configurations, not asserted; upload path hardened against traversal, oversized bodies and unreadable types |
 | **Ops** | 521MB image running as a non-root uid; horizontally scalable — no retrieval state in process memory; load-tested to a measured ceiling (592 rps cached, no head-of-line blocking); Prometheus metrics from every process; retrieval p50/p95 separate from end-to-end latency; Redis embedding + semantic QA cache |
 | **Ingest** | Async worker queue (Redis Streams locally, Kafka/Redpanda in production); uploads streamed to disk under a byte budget, parsing off the event loop; catalogue and vector store reconciled at startup and on demand |
@@ -88,6 +88,13 @@ unflattering. Those are the ones worth reading first.
   documents: the UI showed a healthy corpus and every question abstained.
   Reconciliation now runs at startup and on demand, and a probe verifies it by
   causing both kinds of divergence on purpose.
+
+- **[A raised timeout was a symptom being configured around.](#the-eval-endpoint-became-a-job)**
+  The eval ran inside its own HTTP request, so nginx needed
+  `proxy_read_timeout 600s`. The three problems that setting hid were worse
+  than the one it solved: a closed tab discarded four minutes of paid model
+  calls, two clicks billed for two runs, and a spinner could not be told from a
+  hang. It is a job now, `202` in 14ms, and the timeouts came back down to 120s.
 
 - **Three features shipped silently inert, and none of them failed.** API auth
   was disabled because pydantic-settings bound the field to `API_KEYS` while
@@ -202,7 +209,9 @@ Every `/api/v1` route requires an API key (see [Auth](#auth)); `/health` does no
 | `GET` | `/metrics` | Prometheus scrape (no key; not proxied to the browser) |
 | `POST` | `/api/v1/query` | Run the RAG graph (non-streaming) |
 | `POST` | `/api/v1/query/stream` | Same graph, streams answer tokens via SSE |
-| `POST` | `/api/v1/eval` | Run offline golden-set eval |
+| `POST` | `/api/v1/eval` | Start a golden-set run; returns `202` and a job id ([why](#the-eval-endpoint-became-a-job)) |
+| `GET` | `/api/v1/eval/{job_id}` | Progress, then the report |
+| `GET` | `/api/v1/eval` | The most recent run |
 | `GET` | `/api/v1/metrics` | SLI snapshot (latency, cache, tokens) |
 | `POST` | `/api/v1/documents/seed` | Load sample handbook |
 | `POST` | `/api/v1/documents/reconcile` | Repair catalogue/vector disagreement; `?dry_run=true` reports only ([why](#keeping-redis-and-qdrant-in-agreement)) |
@@ -741,6 +750,67 @@ The requeue path is covered by unit tests but not by this probe: re-indexing
 calls the embedding API, and the account behind it is out of credits. That half
 is asserted, not observed, and this line is here so nobody reads the `PASS`
 above as covering it.
+
+## The eval endpoint became a job
+
+Running the golden set takes minutes, and it used to happen inside the request
+that asked for it. That shape had four problems, and only one of them was ever
+visible: the nginx in front of the API needed `proxy_read_timeout 600s` to stop
+cutting the connection. A timeout being configured around is a symptom, and
+raising it treated the symptom.
+
+The other three were quieter:
+
+- **A closed tab threw the work away.** Four minutes of model calls, already
+  paid for, discarded because nobody was still listening.
+- **Two clicks were two runs.** Nothing stopped a second request starting a
+  second full pass over the same corpus, and billing for it.
+- **A spinner is indistinguishable from a hang.** With no progress, the only
+  way to learn the run was still alive was to wait longer than the timeout —
+  which is how the timeout got found in the first place.
+
+So `POST /api/v1/eval` now returns `202` with a job id and keeps going;
+`GET /api/v1/eval/{job_id}` reports progress and, when it is finished, the
+report. `GET /api/v1/eval` returns the most recent run, so reloading the tab
+does not mean re-running the set.
+
+**The state lives in Redis, not in the process** — for the same reason
+[the sparse index does](#the-sparse-index-moved-into-qdrant). A poll can land
+on a different replica than the one doing the work, and a job that only one
+process can see is a job that breaks the moment there are two.
+
+**The failure Redis cannot cover is the process dying mid-run.** The job
+heartbeats as it goes, and a record that stops beating is reported as
+`abandoned` rather than left claiming to be running forever. The heartbeat also
+refreshes the single-flight claim, so the two cannot disagree about whether a
+run is still alive — and a crashed process cannot block every future run.
+
+Verified against the deployed stack:
+
+```
+POST         202 in 14ms  job=20f0dd8ac6d5 0/53
+second click job=20f0dd8ac6d5 joined=True (one run, not two)
+final        status=failed 0/53 error=RateLimitError: 429 ... no credits remaining
+```
+
+Three things in that trace. The start returns in **14 milliseconds** where it
+used to hold the connection for minutes. The second click **joined** the run
+instead of starting another. And the case count is known at `0/53` before the
+first question finishes, rather than `0/?` for however long one model call
+takes — a detail worth fixing, because "0 of ?" is the same non-answer the old
+spinner gave.
+
+The `failed` is real and is not the job machinery: this ran while the account
+behind the embedding and generation calls had no credits. **What is verified
+here is the job, not the eval** — a successful run with progress climbing
+53 cases has not been observed since the change, and this line is here so the
+`202` above is not read as covering it.
+
+With the long request gone, the proxy timeouts it forced came down with it:
+600s to 120s in the frontend nginx and 3600 to 120 on the Ingress. The longest
+response left is a streamed answer, which is seconds. It is not tighter than
+that because SSE is idle between tokens, and a timeout firing mid-answer
+produces a truncated answer rather than an error anyone can see.
 
 ## Throughput
 

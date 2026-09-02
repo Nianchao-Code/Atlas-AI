@@ -32,6 +32,7 @@ export default function App() {
   const [docs, setDocs] = useState<DocumentRecord[]>([]);
   const [sli, setSli] = useState<MetricsSnapshot | null>(null);
   const [report, setReport] = useState<EvalReport | null>(null);
+  const [progress, setProgress] = useState<string | null>(null);
   const [llm, setLlm] = useState<boolean | null>(null);
 
   async function refresh() {
@@ -114,12 +115,18 @@ export default function App() {
   async function onEval() {
     setBusy(true);
     setError(null);
+    setProgress(null);
     try {
-      setReport(await runEval());
+      setReport(
+        await runEval((job) =>
+          setProgress(job.status === "running" ? `${job.done}/${job.total || "?"}` : null),
+        ),
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   }
 
@@ -264,7 +271,7 @@ export default function App() {
             The eval set is part of the product, not a script you run later. Change chunking, the graph, or the model only after this table still holds.
           </p>
           <button className="primary" disabled={busy} onClick={() => void onEval()}>
-            {busy ? "Running golden set…" : "Run offline eval"}
+            {busy ? `Running golden set… ${progress ?? ""}`.trim() : "Run offline eval"}
           </button>
           {report && <EvalView report={report} />}
         </section>

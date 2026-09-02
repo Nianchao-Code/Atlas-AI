@@ -162,10 +162,52 @@ export async function deleteDoc(docId: string): Promise<void> {
   await ensureOk(res);
 }
 
-export async function runEval(): Promise<EvalReport> {
+export type EvalJob = {
+  job_id: string;
+  status: "running" | "done" | "failed";
+  done: number;
+  total: number;
+  elapsed_s: number;
+  joined: boolean;
+  error: string | null;
+  report: EvalReport | null;
+};
+
+export async function startEval(): Promise<EvalJob> {
   const res = await fetch("/api/v1/eval", { method: "POST" });
   await ensureOk(res);
   return res.json();
+}
+
+export async function evalStatus(jobId: string): Promise<EvalJob> {
+  const res = await fetch(`/api/v1/eval/${jobId}`);
+  await ensureOk(res);
+  return res.json();
+}
+
+/**
+ * Start a run and follow it to the end.
+ *
+ * The run outlives this request: the server returns a job id straight away and
+ * keeps going whether or not anyone is still polling. Closing the tab mid-run
+ * no longer throws the work away, and a second click joins the run in progress
+ * rather than starting a second one.
+ */
+export async function runEval(
+  onProgress?: (job: EvalJob) => void,
+  poll = (ms: number) => new Promise((r) => setTimeout(r, ms)),
+): Promise<EvalReport> {
+  let job = await startEval();
+  onProgress?.(job);
+  while (job.status === "running") {
+    await poll(2000);
+    job = await evalStatus(job.job_id);
+    onProgress?.(job);
+  }
+  if (job.status !== "done" || !job.report) {
+    throw new Error(job.error || "eval failed");
+  }
+  return job.report;
 }
 
 export async function metrics(): Promise<MetricsSnapshot> {

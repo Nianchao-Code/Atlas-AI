@@ -8,8 +8,13 @@ server {
     # nginx presents the credential. This authenticates the frontend to the
     # API; it is not user identity, and the Limits section says so.
     proxy_set_header X-API-Key "${ATLAS_API_KEY}";
-    proxy_read_timeout 600s;
-    proxy_send_timeout 600s;
+    # 600s was sized for the eval endpoint, which used to hold the request
+    # open for the whole golden set. That is a job now, so the longest thing
+    # this proxies is a streamed answer: seconds, not minutes. Kept generous
+    # rather than tight because SSE is idle between tokens, and a timeout that
+    # fires mid-answer is a truncated answer, not an error anyone can see.
+    proxy_read_timeout 120s;
+    proxy_send_timeout 120s;
     proxy_buffering off;
   }
 

@@ -323,7 +323,10 @@ metadata:
   name: atlas
   namespace: atlas
   annotations:
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    # Long enough for a streamed answer, which is the only slow response left
+    # now that the eval runs as a job. Buffering stays off or SSE arrives in
+    # one lump at the end.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
 spec:
   ingressClassName: nginx

@@ -23,7 +23,8 @@ from app.auth import (
 )
 from app.chunking import parse_file
 from app.config import settings
-from app.evaluate import run_eval
+from app.eval_jobs import EvalJob, EvalRunner
+from app.evaluate import load_golden
 from app.graph import Pipeline
 from app.indexer import Indexer
 from app.llm import llm_configured
@@ -58,6 +59,7 @@ class AppState:
     qa_cache: QACache | None
     queue: IndexQueue
     pipeline: Pipeline
+    evals: EvalRunner
     indexer: Indexer
     worker_task: asyncio.Task | None = None
     refresh_task: asyncio.Task | None = None
@@ -177,6 +179,7 @@ async def lifespan(app: FastAPI):
     await state.queue.start()
     state.indexer = Indexer(state.cache, state.vectors, state.catalog)
     state.pipeline = Pipeline(state.cache, state.vectors, qa_cache=state.qa_cache)
+    state.evals = EvalRunner(state.redis, state.pipeline)
     try:
         # Before serving, not after: startup is when the two stores are most
         # likely to disagree, because that is when a collection gets rebuilt.
@@ -333,12 +336,51 @@ async def query_stream(req: QueryRequest, s: StateDep, principal: PrincipalDep):
     return StreamingResponse(events(), media_type="text/event-stream")
 
 
-@app.post("/api/v1/eval")
-async def eval_run(s: StateDep, principal: PrincipalDep, limit: int | None = None):
+def _job_response(job: EvalJob) -> dict:
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "done": job.done,
+        "total": job.total,
+        "elapsed_s": round(job.updated_at - job.started_at, 1),
+        "joined": job.joined,
+        "error": job.error,
+        "report": job.report,
+    }
+
+
+@app.post("/api/v1/eval", status_code=202)
+async def eval_start(s: StateDep, principal: PrincipalDep, limit: int | None = None):
+    """Start a run and return immediately.
+
+    The golden set takes minutes; holding the request open for it made a closed
+    tab throw away the model calls it had already paid for, and made a second
+    click bill for a second run. Poll GET /api/v1/eval/{job_id}.
+    """
     try:
-        return await run_eval(s.pipeline, limit=limit)
+        # Fail here rather than inside the background task, where a missing
+        # golden set would surface as a job that failed for no visible reason.
+        cases = load_golden()
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    total = len(cases[:limit] if limit else cases)
+    return _job_response(await s.evals.start(limit=limit, total=total))
+
+
+@app.get("/api/v1/eval")
+async def eval_latest(s: StateDep, principal: PrincipalDep):
+    job = await s.evals.latest()
+    if job is None:
+        raise HTTPException(status_code=404, detail="no eval has been run yet")
+    return _job_response(job)
+
+
+@app.get("/api/v1/eval/{job_id}")
+async def eval_status(job_id: str, s: StateDep, principal: PrincipalDep):
+    job = await s.evals.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="unknown or expired job")
+    return _job_response(job)
 
 
 @app.get("/metrics")
