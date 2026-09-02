@@ -75,7 +75,17 @@ async def run_eval(pipeline: Pipeline, limit: int | None = None) -> EvalReport:
         relevant = sum(1 for f in filenames if _hit(expected, [f])) if expected else 0
         precision = (relevant / len(filenames)) if filenames and expected else 0.0
         faith = float(payload.get("faithfulness") or 0)
-        correctness = await judge_correctness(q, payload["answer"], case.get("key_points") or [])
+        if expect_abstain:
+            # Asking the judge to grade a refusal against key points it was
+            # never meant to contain scored correct abstentions as failures,
+            # which dragged mean_correctness down every time the pipeline did
+            # the right thing. For these cases correctness is exactly whether
+            # the pipeline held the line.
+            correctness = 1.0 if payload["abstained"] else 0.0
+        else:
+            correctness = await judge_correctness(
+                q, payload["answer"], case.get("key_points") or []
+            )
         hallucinated = (not payload["abstained"]) and faith < 0.5
         abstention_correct = payload["abstained"] == expect_abstain if expect_abstain else None
         naive = payload["prompt_tokens"] + payload["tokens_saved_vs_naive"]
