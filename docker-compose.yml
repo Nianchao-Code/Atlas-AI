@@ -36,6 +36,10 @@ services:
     build:
       context: ./backend
     command: python -m app.worker
+    ports:
+      # Prometheus scrape target. The worker serves no other HTTP, so without
+      # this its index throughput is invisible outside Kubernetes too.
+      - "9100:9100"
     env_file:
       - .env
     environment:
@@ -53,6 +57,12 @@ services:
   frontend:
     build:
       context: ./frontend
+    environment:
+      # Compose runs with auth disabled (ATLAS_API_KEYS unset on the api), so
+      # there is no key to present. Spelled out rather than left to the image
+      # default, because an unset value here used to render a literal
+      # placeholder into the nginx config.
+      ATLAS_API_KEY: ""
     ports:
       - "5173:80"
     depends_on:

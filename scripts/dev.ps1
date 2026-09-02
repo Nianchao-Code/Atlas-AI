@@ -1,6 +1,11 @@
-# Copy to .env in repo root
-Copy-Item ..\.env.example ..\.env -ErrorAction SilentlyContinue
+# Paths are relative to this script, not to wherever it was invoked from:
+# the previous version resolved ..\.env.example against the caller's directory
+# and silently did nothing when that missed.
 Set-Location $PSScriptRoot\..
+if (-not (Test-Path .env)) {
+  Copy-Item .env.example .env
+  Write-Host "Created .env from .env.example -- set OPENAI_API_KEY in it." -ForegroundColor Yellow
+}
 
 Write-Host "Starting Redis + Qdrant..."
 docker compose up -d redis qdrant
