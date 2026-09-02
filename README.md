@@ -4,6 +4,16 @@ Production RAG platform for internal handbook Q&A. Hybrid retrieval, a correctiv
 
 **Demo flow:** seed corpus → ask a question → inspect citations and graph trace → run the golden-set eval.
 
+![Atlas answering a handbook question, with the graph trace and cited sources filling in as the pipeline runs](docs/demo.gif)
+
+One question against the deployed stack, uncut: guard, a cache miss, query
+rewrite, hybrid retrieval (`dense=24 bm25=12 rrf=24`), the rerank node cutting
+24 candidates to 12, LLM grading, parent-passage packing, a streamed answer,
+and the faithfulness gate scoring it 1.00 — 3.9s end to end. The cross-encoder
+is off in this deployment, so that step is a truncation rather than a rerank;
+the [ablation](#what-each-stage-actually-buys) is why. Recorded by
+`scripts/capture_demo.py`, which drives the real UI.
+
 ## Highlights
 
 | Area | Implementation |
@@ -122,6 +132,7 @@ backend/app/     FastAPI, LangGraph pipeline, retrieval, eval
 frontend/        Ask · Corpus · Eval · SLI dashboards
 samples/corpus   Kepler internal handbook (includes injection test doc)
 samples/eval     Golden question set (53 cases, tagged by category)
+docs/            Demo recording used by this README
 infra/k8s/       Kubernetes manifests (Redis, Qdrant, API, worker, frontend)
 ```
 
