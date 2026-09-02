@@ -26,25 +26,73 @@ the [ablation](#what-each-stage-actually-buys) is why. Recorded by
 | **Ops** | Load-tested to a measured ceiling (592 rps cached, no head-of-line blocking); Prometheus metrics from every process; retrieval p50/p95 separate from end-to-end latency; Redis embedding + semantic QA cache |
 | **Ingest** | Async worker queue (Redis Streams locally, Kafka/Redpanda in production) |
 
+## What the measurements said
+
+Every claim above has a number behind it, and several of those numbers are
+unflattering. Those are the ones worth reading first.
+
+- **[Hybrid retrieval and the cross-encoder buy nothing on this corpus.](#what-each-stage-actually-buys)**
+  Dense alone scores higher than dense fused with BM25. The cross-encoder moves
+  correctness by zero and adds latency, so it is off in the deployed config.
+  Query rewrite looked worth +3.5pp on 14 questions and worth exactly nothing
+  on 53 — the clearest argument here for sizing an eval set before trusting it.
+
+- **[The paraphrase cache had never served a hit.](#caching)** It stored the
+  embedding of the rewritten query and looked up with the raw question, so the
+  same question asked twice scored 0.817 against its own entry under a 0.92
+  threshold. The slow linear scan everyone would have optimised first was
+  scanning for something it could not match.
+
+- **[The injection guard contributes nothing measurable.](#injection-resistance)**
+  17 attacks across four defense configurations: nothing leaks, including with
+  both defenses disabled. The regex catches 4 of 4 literal phrasings and 0 of 7
+  rewordings of the same intent. What keeps the system safe is the model's
+  instruction following; the guard buys a cheap deterministic refusal.
+
+- **[No head-of-line blocking under load.](#throughput)** Not one of 2,360
+  concurrent requests crossed 100ms while a 5.2-second request was in flight —
+  the evidence that moving the BM25 rebuild off the event loop did what it
+  claimed.
+
+- **Three features shipped silently inert, and none of them failed.** API auth
+  was disabled because pydantic-settings bound the field to `API_KEYS` while
+  the deployment set `ATLAS_API_KEYS`. The paraphrase cache never matched. The
+  CI eval gate skipped every run because a step's own `env` is not in scope for
+  that step's `if`. All three looked configured, all three were green, and all
+  three were found by testing the deployed system rather than the code.
+
 ## Architecture
 
-```
-Upload / seed documents
-    → Redis Streams (local) or Kafka/Redpanda (production)
-    → Worker: chunk → embed (Redis content-hash cache) → Qdrant
+```mermaid
+flowchart TD
+    U["Upload or seed"] --> Q[("Redis Streams<br/>Kafka in production")]
+    Q --> W["Worker: chunk, embed, index"]
+    W --> QD[("Qdrant chunks")]
+    W -. "bumps bm25:rev" .-> BR["API rebuilds its BM25<br/>snapshot on a background tick"]
 
-Query
-    → Semantic cache hit? return
-    → LangGraph
-         guard → rewrite → hybrid retrieve → cross-encoder rerank → grade
-              not enough? rewrite and search again (max 2) or abstain
-              enough? parent dedupe + token-budget pack → generate (SSE) → faithfulness
-                   score < 0.7 → regenerate once, still weak → abstain
-    → Citations + graph trace in the UI
-
-Offline eval
-    → recall / context precision / faithfulness / correctness / hallucination / tokens vs naive
+    A(["Question"]) --> G{"guard"}
+    G -- "injection pattern" --> X["refuse"]
+    G --> C{"cache"}
+    C -- "exact or paraphrase hit" --> DONE(["answer + citations"])
+    C -- "miss" --> RW["rewrite + HyDE"]
+    RW --> RT["retrieve: dense + BM25, fused by RRF"]
+    QD -.-> RT
+    RT --> RR["rerank"]
+    RR --> GR{"graded sufficient?"}
+    GR -- "no, retries left" --> RW
+    GR -- "no, retries spent" --> AB["abstain"]
+    GR -- "yes" --> CP["dedupe parents<br/>pack to token budget"]
+    CP --> GEN["generate, streamed"]
+    GEN --> F{"faithfulness at least 0.7?"}
+    F -- "no, first try" --> GEN
+    F -- "no, again" --> AB
+    F -- "yes" --> DONE
 ```
+
+The dashed edges are the parts that are easy to miss: the worker indexes in its
+own process and only signals the API through a Redis counter, and the API
+rebuilds its sparse index on a background tick rather than inside a request.
+[Throughput](#throughput) is where that choice gets measured.
 
 ## Tech stack
 
@@ -493,10 +541,12 @@ recall here needs a threshold that also fuses questions one decisive word
 apart, so it is not a knob to turn without a better signal than cosine
 similarity.
 
-**The cross-encoder downloads at first use.** `ENABLE_CROSS_ENCODER` is off in
-`infra/k8s/atlas.yaml` because the model is fetched from HuggingFace on the
-first request, which needs egress and adds ~12s to that request. Bake the
-weights into the image before turning it on.
+**The cross-encoder is off, and the measurement is the reason.** It changed
+answer correctness by zero on the golden set while adding latency, so it stays
+disabled in `infra/k8s/atlas.yaml`. Turning it on also costs a HuggingFace
+fetch on the first request — about 12s, and egress the cluster may not have —
+so the weights would need baking into the image first. That work is not worth
+doing until a corpus exists where the reranker earns it.
 
 **Redis and Qdrant can still diverge.** Redis holds the document catalogue and
 now runs with AOF on a PVC, so a restart no longer empties it. There is still
