@@ -1,0 +1,20 @@
+# Repo-root config: the helper scripts in scripts/ import from backend/app, so
+# linting only one of them leaves the seam between them unchecked.
+line-length = 100
+target-version = "py311"
+extend-exclude = [".venv", "node_modules", "dist", "*.egg-info"]
+
+[lint]
+# Beyond the defaults: import order, bugbear, comprehensions, modernisation,
+# simplification. Not the full catalogue -- rules nobody would act on produce
+# noise that trains people to ignore the linter.
+select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
+ignore = [
+  "E501",  # line length belongs to the formatter, not to two tools
+  "B008",  # FastAPI puts Depends()/File() in argument defaults by design
+]
+
+[lint.per-file-ignores]
+# These scripts live outside the package and must extend sys.path before they
+# can import from it. That is the layout, not carelessness.
+"scripts/*.py" = ["E402"]

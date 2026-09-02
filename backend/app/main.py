@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
+import redis.asyncio as redis
 import structlog
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,8 +32,10 @@ from app.metrics import (
     AUTH_REJECTIONS,
     INDEX_JOBS,
     observe_query,
-    render as render_metrics,
     set_corpus_size,
+)
+from app.metrics import (
+    render as render_metrics,
 )
 from app.models import DocumentRecord, MetricsSnapshot, QueryRequest, QueryResponse
 from app.obs import Cache, obs
@@ -164,9 +167,7 @@ async def lifespan(app: FastAPI):
     state.queue = IndexQueue(state.redis)
     await state.queue.start()
     state.indexer = Indexer(state.cache, state.vectors, state.catalog, state.bm25)
-    state.pipeline = Pipeline(
-        state.cache, state.vectors, state.bm25, qa_cache=state.qa_cache
-    )
+    state.pipeline = Pipeline(state.cache, state.vectors, state.bm25, qa_cache=state.qa_cache)
     try:
         # Build the BM25 snapshot now so the first query does not pay for it.
         await state.pipeline.warm()
@@ -247,7 +248,9 @@ async def seed(s: StateDep, principal: PrincipalDep):
         if existing and existing.status == "ready":
             created.append(existing)
             continue
-        rec = DocumentRecord(id=doc_id, filename=path.name, bytes=path.stat().st_size, status="queued")
+        rec = DocumentRecord(
+            id=doc_id, filename=path.name, bytes=path.stat().st_size, status="queued"
+        )
         await s.catalog.upsert(rec)
         await s.queue.publish(
             {
@@ -272,9 +275,7 @@ async def delete_doc(doc_id: str, s: StateDep, principal: PrincipalDep):
 
 @app.post("/api/v1/query", response_model=QueryResponse)
 async def query(req: QueryRequest, s: StateDep, principal: PrincipalDep):
-    payload = await s.pipeline.ainvoke(
-        req.question, use_cache=req.use_cache, principal=principal
-    )
+    payload = await s.pipeline.ainvoke(req.question, use_cache=req.use_cache, principal=principal)
     obs.record_query(
         retrieval_ms=payload["retrieval_ms"],
         prompt_tokens=payload["prompt_tokens"],

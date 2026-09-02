@@ -12,6 +12,7 @@ Drives the real UI; nothing here is mocked.
 
     python capture_demo.py
 """
+
 from __future__ import annotations
 
 import io
@@ -75,8 +76,11 @@ with sync_playwright() as pw:
             if "Retrieve and answer" in b.inner_text() or "Streaming" in b.inner_text()
         ]
         metrics = next(
-            (l for l in page.inner_text("body").splitlines()
-             if "retrieval" in l and "faithfulness" in l),
+            (
+                line
+                for line in page.inner_text("body").splitlines()
+                if "retrieval" in line and "faithfulness" in line
+            ),
             "",
         )
         if labels and "Streaming" not in labels[0] and metrics and "faithfulness —" not in metrics:

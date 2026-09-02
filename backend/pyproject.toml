@@ -26,7 +26,7 @@ dependencies = [
 
 [project.optional-dependencies]
 kafka = ["aiokafka>=0.12.0"]
-dev = ["pytest>=8.3.0", "pytest-asyncio>=0.24.0", "httpx>=0.27.0"]
+dev = ["pytest>=8.3.0", "pytest-asyncio>=0.24.0", "httpx>=0.27.0", "ruff>=0.8.0"]
 # scripts/capture_demo.py only; not needed to run or test the service.
 demo = ["playwright>=1.48.0", "pillow>=11.0.0"]
 

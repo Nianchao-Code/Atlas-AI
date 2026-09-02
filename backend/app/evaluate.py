@@ -108,8 +108,8 @@ async def run_eval(pipeline: Pipeline, limit: int | None = None) -> EvalReport:
         )
 
     n = len(results) or 1
-    recall_cases = [r for r, c in zip(results, cases) if c.get("expected_docs")]
-    abstain_cases = [(r, c) for r, c in zip(results, cases) if c.get("expect_abstain")]
+    recall_cases = [r for r, c in zip(results, cases, strict=True) if c.get("expected_docs")]
+    abstain_cases = [(r, c) for r, c in zip(results, cases, strict=True) if c.get("expect_abstain")]
     retrievals = [r.retrieval_ms for r in results]
     p95 = retrievals[0] if len(retrievals) < 2 else quantiles(retrievals, n=20)[18]
     mean_prompt = sum(r.prompt_tokens for r in results) / n
