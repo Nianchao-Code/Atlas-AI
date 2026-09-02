@@ -23,7 +23,7 @@ the [ablation](#what-each-stage-actually-buys) is why. Recorded by
 | **Orchestration** | LangGraph: guard → cache → rewrite → retrieve → rerank → grade → compress → generate → faithfulness |
 | **Quality** | 53-question golden set tagged by failure mode — recall, precision, faithfulness, correctness, hallucination rate, abstention accuracy, plus a stage-by-stage ablation |
 | **Safety** | API-key auth with per-principal cache isolation and rate limiting; injection resistance measured across 17 attacks and four defense configurations, not asserted |
-| **Ops** | 521MB image; load-tested to a measured ceiling (592 rps cached, no head-of-line blocking); Prometheus metrics from every process; retrieval p50/p95 separate from end-to-end latency; Redis embedding + semantic QA cache |
+| **Ops** | 521MB image running as a non-root uid; load-tested to a measured ceiling (592 rps cached, no head-of-line blocking); Prometheus metrics from every process; retrieval p50/p95 separate from end-to-end latency; Redis embedding + semantic QA cache |
 | **Ingest** | Async worker queue (Redis Streams locally, Kafka/Redpanda in production) |
 
 ## What the measurements said
@@ -266,7 +266,7 @@ Aggregates hide where the differences live, so the same runs by question type
   `sentence-transformers` was dragging torch, triton and 2.7GB of CUDA wheels
   into a CPU-only image for it. Removing that from the default build took the
   image from **8.69GB to 521MB**, and the layer the cluster stores from 2.99GB
-  to 117MB. Install `.[rerank]` to turn it back on, ideally against the CPU
+  to 117MB, and CI's backend job from 2m19s to 44s. Install `.[rerank]` to turn it back on, ideally against the CPU
   torch index.
 - **Grading is the stage that pays.** Context precision 0.43 → 0.83, prompt
   tokens 990 → 232 (−77%), and abstention correctness doubles (0.333 → 0.667).

@@ -149,6 +149,12 @@ spec:
         prometheus.io/port: "8000"
         prometheus.io/path: /metrics
     spec:
+      # The image runs as uid 10001; fsGroup makes the mounted volumes
+      # group-writable by it, which an emptyDir is not by default.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
       containers:
         - name: api
           # scripts/k8s-deploy.ps1 rewrites this tag to the image it just built.
@@ -221,6 +227,12 @@ spec:
         prometheus.io/port: "9100"
         prometheus.io/path: /metrics
     spec:
+      # The image runs as uid 10001; fsGroup makes the mounted volumes
+      # group-writable by it, which an emptyDir is not by default.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
       containers:
         - name: worker
           image: atlas-api:latest
