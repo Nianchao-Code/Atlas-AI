@@ -46,10 +46,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: Install and typecheck
+      - name: Install, test and typecheck
         working-directory: frontend
         run: |
           npm ci
+          npm test
           npm run build
 
   eval-full:

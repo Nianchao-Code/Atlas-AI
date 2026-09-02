@@ -9,6 +9,7 @@ rather than only the global setting.
 from __future__ import annotations
 
 import pytest
+
 from app.config import settings
 from app.graph import Pipeline, PipelineConfig
 from app.obs import Tracer
