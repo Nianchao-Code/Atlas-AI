@@ -54,6 +54,15 @@ AUTH_REJECTIONS = Counter(
     "Requests refused for a missing or invalid API key",
 )
 
+UPLOAD_REJECTIONS = Counter(
+    "atlas_upload_rejections_total",
+    "Uploads refused before they were written to disk",
+    # The HTTP status, not the filename: 400 is a traversal attempt, 413 an
+    # oversized body, 415 a type this service cannot read. Labelling the
+    # filename would put attacker-controlled text into the metric namespace.
+    ["reason"],
+)
+
 RATE_LIMITED = Counter(
     "atlas_rate_limited_total",
     "Requests refused because the principal exhausted its window",

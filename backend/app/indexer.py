@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from app.chunking import chunk_document, parse_file
-from app.hybrid import BM25Index
 from app.llm import embed_texts
 from app.obs import Cache
 from app.store_docs import Catalog
@@ -11,13 +11,10 @@ from app.vectors import VectorStore
 
 
 class Indexer:
-    def __init__(
-        self, cache: Cache, vectors: VectorStore, catalog: Catalog, bm25: BM25Index
-    ) -> None:
+    def __init__(self, cache: Cache, vectors: VectorStore, catalog: Catalog) -> None:
         self.cache = cache
         self.vectors = vectors
         self.catalog = catalog
-        self.bm25 = bm25
 
     async def index_job(self, job: dict[str, Any]) -> int:
         from pathlib import Path
@@ -29,17 +26,19 @@ class Indexer:
             await self.catalog.upsert(rec)
 
         path = Path(job.get("path") or "")
-        text = job.get("text")
+        text = str(job.get("text") or "")
         if not text:
             if not path.exists():
                 raise FileNotFoundError(f"index job missing text and path does not exist: {path}")
-            text = parse_file(path)
+            # PDF extraction is CPU-bound and unbounded by document size, so it
+            # does not belong on the loop the embedded worker shares with the API.
+            text = await asyncio.to_thread(parse_file, path)
         chunks = chunk_document(doc_id=doc_id, filename=job["filename"], text=text)
         vectors = await self._embed_cached([c.text for c in chunks])
-        self.vectors.upsert(chunks, vectors)
+        await asyncio.to_thread(self.vectors.upsert, chunks, vectors)
 
-        all_hits = self.vectors.scroll_all()
-        self.bm25.rebuild(all_hits)
+        # Announce the change; whoever serves queries rebuilds its own sparse
+        # snapshot from this key, in a thread, on its own schedule.
         await self.cache.r.incr("bm25:rev")
 
         if rec:

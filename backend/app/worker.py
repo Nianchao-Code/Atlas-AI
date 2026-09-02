@@ -6,7 +6,6 @@ import logging
 import structlog
 
 from app.config import settings
-from app.hybrid import BM25Index
 from app.indexer import Indexer
 from app.metrics import INDEX_JOBS, set_corpus_size
 from app.obs import Cache
@@ -35,9 +34,7 @@ async def run_worker() -> None:
     await await_dependency("qdrant", lambda: asyncio.to_thread(vectors.client.get_collections))
     vectors.ensure()
     catalog = Catalog(r)
-    bm25 = BM25Index()
-    bm25.rebuild(vectors.scroll_all())
-    indexer = Indexer(cache, vectors, catalog, bm25)
+    indexer = Indexer(cache, vectors, catalog)
     queue = IndexQueue(r)
     await queue.start()
     log.info("worker.started", kafka=bool(settings.kafka_brokers), queue="poll-v3")

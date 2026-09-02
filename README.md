@@ -22,9 +22,9 @@ the [ablation](#what-each-stage-actually-buys) is why. Recorded by
 | **Generation** | SSE streaming answers; token-budget packing on deduplicated parent passages |
 | **Orchestration** | LangGraph: guard → cache → rewrite → retrieve → rerank → grade → compress → generate → faithfulness |
 | **Quality** | 53-question golden set tagged by failure mode — recall, precision, faithfulness, correctness, hallucination rate, abstention accuracy, plus a stage-by-stage ablation |
-| **Safety** | API-key auth with per-principal cache isolation and rate limiting; injection resistance measured across 17 attacks and four defense configurations, not asserted |
+| **Safety** | API-key auth with per-principal cache isolation and rate limiting; injection resistance measured across 17 attacks and four defense configurations, not asserted; upload path hardened against traversal, oversized bodies and unreadable types |
 | **Ops** | 521MB image running as a non-root uid; load-tested to a measured ceiling (592 rps cached, no head-of-line blocking); Prometheus metrics from every process; retrieval p50/p95 separate from end-to-end latency; Redis embedding + semantic QA cache |
-| **Ingest** | Async worker queue (Redis Streams locally, Kafka/Redpanda in production) |
+| **Ingest** | Async worker queue (Redis Streams locally, Kafka/Redpanda in production); uploads streamed to disk under a byte budget, parsing and index rebuilds off the event loop |
 
 ## What the measurements said
 
@@ -58,6 +58,13 @@ unflattering. Those are the ones worth reading first.
   concurrent requests crossed 100ms while a 5.2-second request was in flight —
   the evidence that moving the BM25 rebuild off the event loop did what it
   claimed.
+
+- **[The upload endpoint let a caller write to the application's own source.](#the-ingest-path)**
+  `filename` came from the client and was joined onto the upload directory
+  unchecked, so `../../../../app/main.py` resolved to `/app/app/main.py` —
+  writable, because the non-root uid owns `/app`. Verified against the running
+  pod. Every claim on this page was about the query path; nobody had pointed
+  one at the half of the service that takes files.
 
 - **Three features shipped silently inert, and none of them failed.** API auth
   was disabled because pydantic-settings bound the field to `API_KEYS` while
@@ -176,7 +183,7 @@ Every `/api/v1` route requires an API key (see [Auth](#auth)); `/health` does no
 | `POST` | `/api/v1/eval` | Run offline golden-set eval |
 | `GET` | `/api/v1/metrics` | SLI snapshot (latency, cache, tokens) |
 | `POST` | `/api/v1/documents/seed` | Load sample handbook |
-| `POST` | `/api/v1/documents` | Upload md / txt / pdf |
+| `POST` | `/api/v1/documents` | Upload md / txt / pdf — `415` on other types, `413` over `MAX_UPLOAD_BYTES` (20MiB), `400` if the filename cannot be made safe ([why](#the-ingest-path)) |
 | `DELETE` | `/api/v1/documents/{id}` | Remove a document |
 
 ## Project layout
@@ -454,6 +461,85 @@ and has an LLM adjudicate whether the answer asserted or complied. Even that
 judge disagreed with itself once on two near-identical negations, which is why
 the remaining 1/3 in the raw output is reported as judge variance rather than a
 finding.
+
+## The ingest path
+
+Every measurement above is about answering questions. Nothing had been pointed
+at the other half of the service — the one endpoint where a caller supplies a
+filesystem path.
+
+**An upload could write anywhere the container user could write.** `filename`
+arrives from the client and was joined straight onto the upload directory:
+
+```python
+dest = Path(settings.upload_dir) / f"{doc_id}_{filename}"
+dest.write_bytes(await file.read())
+```
+
+Verified against the running pod: `filename = "../../../../app/main.py"`
+resolves to `/app/app/main.py`. The image runs as a non-root uid — but that uid
+owns `/app`, because the Dockerfile chowns it so the app can run there. The
+hardening that stopped an upload from reaching `/etc` did nothing to stop it
+reaching the application's own source, and the next restart would have executed
+whatever the upload contained.
+
+The `doc_id` prefix is what made this non-obvious. `abc123_../../x` splits into
+`abc123_..`, `..`, `x` — no separator before the first `..`, so the prefix
+absorbs one level and a shallow probe lands back inside the directory looking
+harmless. Escaping needs three.
+
+Fixed in `app/uploads.py`: the filename is reduced to a single path component,
+and the resolved path is then checked for containment. The second check is
+redundant against the first today. It is there because it is the half that
+keeps holding if someone later relaxes the sanitiser — one asserts a property
+of the input, the other of the result. Backslashes are folded by hand, because
+on Linux they are ordinary characters: `Path("..\..\x.md").name` returns the
+whole string unchanged, and a POSIX-only defence waves Windows-style payloads
+through.
+
+**Two more things the endpoint accepted.** The body was read fully into memory
+before anything could object to its size, so a request larger than the pod's
+2Gi limit was an OOM kill rather than a 413; it now streams to disk under a
+20MiB budget and unlinks the partial file on refusal. And any suffix was
+accepted and then indexed as replacement characters — an `.exe` became
+retrievable chunks of mojibake. Unreadable types are refused at the door.
+
+Every row below was a `200` before this change, and every "now" column is the
+deployed behaviour, not the intended one:
+
+| `filename` sent | before | now |
+| --- | --- | --- |
+| `../../../../app/main.py` | written to `/app/app/main.py` | `415` |
+| `../../ESCAPED.md` | written outside `uploads/` | stored as `<id>_ESCAPED.md` |
+| `..\..\..\evil.md` | backslashes kept in the name | stored as `<id>_evil.md` |
+| `payload.exe` | indexed as mojibake | `415` |
+| 21MB body | read into memory | `413` |
+| `Employee Handbook v2.md` | accepted | accepted, indexed, answerable |
+
+Readable types are sanitised rather than rejected: someone who names a file
+oddly should get their document, not an error. The catalogue and the citations
+keep the name they used; only the path on disk is rewritten.
+
+**The same event-loop rule the query path already follows.** `delete_doc`
+scrolled the whole corpus and rebuilt the BM25 index inline, and uploads parsed
+PDFs inline — synchronous O(corpus) work on the event loop, which is exactly
+what the [BM25 refactor](#throughput) exists to eliminate, left behind on the
+two endpoints that were never load-tested. Deletes now bump `bm25:rev` and let
+the background refresher rebuild in a thread, which is what indexing already
+did; parsing runs in a thread.
+
+Honest about the size of it: at this corpus that stall is **4.6ms** (4.1ms
+scroll, 0.4ms rebuild), and the rebuild alone is 13.7ms at 1080 chunks. It is
+linear in the corpus, and it is the same work that put 19s into a p95 when it
+ran cold on the query path — but at 27 chunks it was never going to show up in
+a load test. The reason to fix it is that the rule should hold on every path,
+not that this instance was expensive.
+
+A piece of dead work went with it. `Indexer` rebuilt a BM25 index that nothing
+in its own process ever searched: the worker answers no queries, and the API
+rebuilds from `bm25:rev` on a timer. Every ingest was paying for a full index
+build whose result was discarded — and in embedded mode, paying for it on the
+API's event loop.
 
 ## Throughput
 

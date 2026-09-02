@@ -11,7 +11,7 @@ import redis.asyncio as redis
 import structlog
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import ORJSONResponse, Response, StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from app.auth import (
     auth_enabled,
@@ -31,6 +31,7 @@ from app.llm import llm_configured
 from app.metrics import (
     AUTH_REJECTIONS,
     INDEX_JOBS,
+    UPLOAD_REJECTIONS,
     observe_query,
     set_corpus_size,
 )
@@ -43,6 +44,7 @@ from app.qa_cache import QACache
 from app.redis_client import create_redis
 from app.startup import await_dependency
 from app.store_docs import Catalog, IndexQueue
+from app.uploads import UploadRejected, destination, save
 from app.vectors import VectorStore
 
 log = structlog.get_logger()
@@ -171,7 +173,7 @@ async def lifespan(app: FastAPI):
     state.bm25 = BM25Index()
     state.queue = IndexQueue(state.redis)
     await state.queue.start()
-    state.indexer = Indexer(state.cache, state.vectors, state.catalog, state.bm25)
+    state.indexer = Indexer(state.cache, state.vectors, state.catalog)
     state.pipeline = Pipeline(state.cache, state.vectors, state.bm25, qa_cache=state.qa_cache)
     try:
         # Build the BM25 snapshot now so the first query does not pay for it.
@@ -190,7 +192,7 @@ async def lifespan(app: FastAPI):
     await state.redis.aclose()
 
 
-app = FastAPI(title="Atlas AI", default_response_class=ORJSONResponse, lifespan=lifespan)
+app = FastAPI(title="Atlas AI", lifespan=lifespan)
 # allow_origins=["*"] with credentials is the combination that turns a
 # browser into a confused deputy. In the image the frontend is same-origin
 # behind nginx, so this list only needs the Vite dev server.
@@ -219,19 +221,24 @@ async def list_docs(s: StateDep, principal: PrincipalDep):
 
 @app.post("/api/v1/documents")
 async def upload_doc(s: StateDep, principal: PrincipalDep, file: UploadFile = File(...)):
-    raw = await file.read()
     doc_id = uuid.uuid4().hex[:12]
-    filename = file.filename or "upload.bin"
-    dest = Path(settings.upload_dir) / f"{doc_id}_{filename}"
-    dest.write_bytes(raw)
-    rec = DocumentRecord(id=doc_id, filename=filename, bytes=len(raw), status="queued")
+    try:
+        dest = destination(settings.upload_dir, doc_id, file.filename or "")
+        size = await save(file, dest, settings.max_upload_bytes)
+    except UploadRejected as exc:
+        UPLOAD_REJECTIONS.labels(reason=str(exc.status)).inc()
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+    # Stored under the sanitised name, but reported and cited under the one the
+    # user recognises. The two are only ever equal by luck.
+    filename = file.filename or dest.name
+    rec = DocumentRecord(id=doc_id, filename=filename, bytes=size, status="queued")
     await s.catalog.upsert(rec)
     await s.queue.publish(
         {
             "doc_id": doc_id,
             "filename": filename,
             "path": str(dest),
-            "text": parse_file(dest),
+            "text": await asyncio.to_thread(parse_file, dest),
         }
     )
     return rec
@@ -262,7 +269,7 @@ async def seed(s: StateDep, principal: PrincipalDep):
                 "doc_id": doc_id,
                 "filename": path.name,
                 "path": str(path),
-                "text": parse_file(path),
+                "text": await asyncio.to_thread(parse_file, path),
             }
         )
         created.append(rec)
@@ -271,9 +278,12 @@ async def seed(s: StateDep, principal: PrincipalDep):
 
 @app.delete("/api/v1/documents/{doc_id}")
 async def delete_doc(doc_id: str, s: StateDep, principal: PrincipalDep):
-    s.vectors.delete_doc(doc_id)
+    await asyncio.to_thread(s.vectors.delete_doc, doc_id)
     await s.catalog.delete(doc_id)
-    s.bm25.rebuild(s.vectors.scroll_all())
+    # Bump the revision and let the background refresher rebuild in a thread.
+    # Rebuilding here instead put an O(corpus) scroll and index build directly
+    # on the event loop -- exactly the stall the refresher was written to end,
+    # left behind on the one path that was never load-tested.
     await s.cache.r.incr("bm25:rev")
     return {"ok": True}
 

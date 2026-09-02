@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     # needs the Vite dev server.
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
+    # An upload was read fully into memory before anything checked its size,
+    # so a body larger than the container limit was an OOM kill rather than a
+    # 413. 20MiB clears the documents this is built for and sits far under the
+    # 2Gi the pod is allowed.
+    max_upload_bytes: int = 20 * 1024 * 1024
+
     embedded_worker: bool = True
     log_level: str = "INFO"
     samples_dir: str = "../samples"

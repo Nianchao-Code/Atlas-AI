@@ -67,10 +67,13 @@ async def run_gate(mode: str) -> int:
     bm25 = BM25Index()
     queue = IndexQueue(r)
     await queue.start()
-    indexer = Indexer(cache, vectors, catalog, bm25)
+    indexer = Indexer(cache, vectors, catalog)
     pipeline = Pipeline(cache, vectors, bm25)
 
     await seed_corpus(catalog, queue, indexer)
+    # Indexing only bumps bm25:rev; building the sparse snapshot from it is the
+    # reader's job, here as in the API.
+    await pipeline.warm()
     report = await run_eval(pipeline, limit=None)
     await queue.close()
     await r.aclose()
