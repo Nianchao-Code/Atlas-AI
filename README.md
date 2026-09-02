@@ -11,7 +11,7 @@ Production RAG platform for internal handbook Q&A. Hybrid retrieval, a correctiv
 | **Retrieval** | Parent-child chunking, BM25 + dense RRF, cross-encoder rerank, LLM document grading |
 | **Generation** | SSE streaming answers; token-budget packing on deduplicated parent passages |
 | **Orchestration** | LangGraph: guard → cache → rewrite → retrieve → rerank → grade → compress → generate → faithfulness |
-| **Quality** | Offline eval on `samples/eval/golden.json` — recall, precision, faithfulness, correctness, hallucination rate, abstention accuracy |
+| **Quality** | 53-question golden set tagged by failure mode — recall, precision, faithfulness, correctness, hallucination rate, abstention accuracy, plus a stage-by-stage ablation |
 | **Safety** | User prompt-injection blocking + indirect corpus injection handling (`08-injection-bait.md`) |
 | **Ops** | Retrieval p50/p95 separate from end-to-end latency; Redis embedding + semantic QA cache |
 | **Ingest** | Async worker queue (Redis Streams locally, Kafka/Redpanda in production) |
@@ -118,7 +118,7 @@ docker compose --profile kafka up -d
 backend/app/     FastAPI, LangGraph pipeline, retrieval, eval
 frontend/        Ask · Corpus · Eval · SLI dashboards
 samples/corpus   Kepler internal handbook (includes injection test doc)
-samples/eval     Golden question set
+samples/eval     Golden question set (53 cases, tagged by category)
 infra/k8s/       Kubernetes manifests (Redis, Qdrant, API, worker, frontend)
 ```
 
@@ -145,7 +145,10 @@ python scripts/eval_gate.py --smoke
 python scripts/eval_gate.py --full
 ```
 
-Thresholds live in `samples/eval/thresholds.json`.
+Thresholds live in `samples/eval/thresholds.json` and are set below the worst
+of two measured runs, not chosen by feel. The previous
+`min_abstention_accuracy: 1.0` was decided by the single abstention question
+the set had at the time; there are now seven.
 
 ## What each stage actually buys
 
@@ -155,50 +158,65 @@ and nothing else.
 
 | Configuration | Recall | Ctx precision | Faithful | Correct | Halluc. | p95 ms | Tokens |
 |---|---|---|---|---|---|---|---|
-| **Dense only** | 1.000 ±0.000 | 0.536 ±0.017 | 1.000 ±0.000 | 1.000 ±0.000 | 0.000 | 1469 ±1579 | 932 ±2 |
-| **BM25 only** | 1.000 ±0.000 | 0.405 ±0.000 | 1.000 ±0.000 | 1.000 ±0.000 | 0.000 | 3460 ±3630 | 971 ±0 |
-| **Hybrid + RRF** | 1.000 ±0.000 | 0.452 ±0.000 | 1.000 ±0.000 | 0.929 ±0.000 | 0.000 | 1767 ±1944 | 989 ±0 |
-| **+ cross-encoder** | 1.000 ±0.000 | 0.476 ±0.000 | 1.000 ±0.000 | 0.964 ±0.051 | 0.000 | 628 ±10 | 968 ±0 |
-| **+ LLM grading (full)** | 0.923 ±0.000 | 0.786 ±0.000 | 0.993 ±0.010 | 0.839 ±0.025 | 0.000 | 283 ±77 | 239 ±0 |
-| **Full − query rewrite** | 0.923 ±0.000 | 0.779 ±0.010 | 1.000 ±0.000 | 0.804 ±0.025 | 0.000 | 1648 ±1850 | 239 ±0 |
+| **Dense only** | 1.000 ±0.000 | 0.508 ±0.002 | 0.981 ±0.000 | **0.925** ±0.000 | 0.000 | 1392 ±1469 | 961 |
+| **BM25 only** | 1.000 ±0.000 | 0.403 ±0.002 | 0.977 ±0.000 | 0.863 ±0.007 | 0.000 | 304 ±8 | 942 ±7 |
+| **Hybrid + RRF** | 1.000 ±0.000 | 0.434 ±0.000 | 0.980 ±0.001 | 0.906 ±0.000 | 0.000 | 485 ±93 | 990 |
+| **+ cross-encoder** | 1.000 ±0.000 | 0.428 ±0.000 | 0.977 ±0.000 | 0.906 ±0.000 | 0.000 | 660 ±316 | 985 ±8 |
+| **+ LLM grading (full)** | 0.961 ±0.000 | **0.830** ±0.003 | 0.975 ±0.004 | 0.915 ±0.013 | 0.000 | 1024 ±336 | **232** ±5 |
+| **Full − query rewrite** | 0.961 ±0.000 | 0.830 ±0.003 | 0.975 ±0.001 | 0.915 ±0.013 | 0.000 | 1099 ±1159 | 232 ±5 |
 
-14 questions, 2 runs per configuration, mean ±sd. Judge `gpt-4o-mini`,
+53 questions, 2 runs per configuration, mean ±sd. Judge `gpt-4o-mini`,
 generation `gpt-4o`. Reproduce with `python scripts/ablation.py --repeats 2`.
 
-**Read it honestly:**
+Aggregates hide where the differences live, so the same runs by question type
+(answer correctness, one run):
 
-- **The retrieval stack is not earning its keep on this corpus.** Dense, BM25,
-  hybrid and hybrid+rerank all reach recall 1.000 — 8 documents and 27 chunks
-  are not enough to separate them. Hybrid actually *lowers* context precision
-  against dense alone (0.536 → 0.452), because fusing in BM25 hits pulls in
-  passages the dense ranker had already pushed down.
-- **Grading is the one stage that moves the numbers, and it is a trade, not a
-  win.** Context precision 0.45 → 0.79 and prompt tokens 989 → 239 (−76%), paid
-  for with recall 1.000 → 0.923 and correctness 0.964 → 0.839. On a corpus this
-  small the trade is bad; the token saving is what would justify it at scale.
-- **Query rewrite/HyDE is worth roughly +3.5pp correctness** (0.804 → 0.839) at
-  identical recall — the smallest defensible component in the stack.
-- **The latency column is noise at n=2.** Several standard deviations exceed
-  their means. Treat only `+ cross-encoder` (628 ±10) and `full` (283 ±77) as
-  measured; the rest needs more runs on an idle machine.
+| Category | n | Dense | BM25 | Full | What it stresses |
+|---|---|---|---|---|---|
+| `semantic` | 4 | **1.000** | **0.500** | 1.000 | paraphrased away from corpus wording |
+| `abstain` | 6 | 0.333 | 0.167 | **0.667** | document retrievable, fact absent from it |
+| `policy` | 9 | 1.000 | 1.000 | **0.778** | the answer is a rule, not a figure |
+| `distractor` | 8 | 1.000 | 1.000 | **0.875** | the same figure appears in another document |
+| `deferral` | 2 | 1.000 | 0.750 | 1.000 | corpus says where the answer lives, not what it is |
+| `lexical` | 5 | 1.000 | 1.000 | 1.000 | exact identifiers (`KV-2025-441`, `IR-4`) |
+| `multi-hop` | 5 | 1.000 | 1.000 | 1.000 | answer spans two documents |
+| `lookup` | 10 | 1.000 | 1.000 | 1.000 | single stated figure |
+| `injection` | 3 | 1.000 | 1.000 | 1.000 | user and corpus prompt injection |
 
-**What the ablation exposed about the eval harness itself**, which matters more
-than any row above:
+**What the measurements support:**
 
-- **Recall saturates at 1.000 for every retriever**, so the golden set cannot
-  currently justify any retrieval design decision. It needs harder questions —
-  multi-hop, near-duplicate distractors, questions whose answer sits in the
-  tail of a long document.
-- **`abstention_accuracy` is computed over exactly one case**, and
-  `thresholds.json` gates CI at `1.0`. A single question decides whether the
-  build is red.
-- **`mean_correctness` punishes correct abstentions.** The `unknown` case is
-  abstained on correctly (`abstention_accuracy` 1.0) and still scored 0.50 by
-  the correctness judge, because the judge grades the refusal text against key
-  points it was never supposed to contain.
-- **Grading over-abstains.** On `pii-to-llm` the dense-only pipeline retrieves
-  the right passage and answers correctly; the full pipeline abstains. That is
-  a real regression the aggregate numbers hide.
+- **Dense retrieval earns its place, on the strength of one category.** It ties
+  BM25 everywhere except `semantic`, where questions are deliberately worded
+  away from the corpus vocabulary and BM25 scores 0.500 against dense 1.000.
+- **BM25 and RRF do not.** Fusing BM25 into dense *lowers* overall correctness
+  (0.925 → 0.906) and context precision (0.508 → 0.434): the lexical hits
+  displace passages the dense ranker had already ordered correctly.
+- **The cross-encoder does nothing here.** Identical correctness to plain
+  hybrid, marginally worse precision, and it adds latency. On this corpus it is
+  pure cost, and `ENABLE_CROSS_ENCODER` stays off in the deployed config.
+- **Grading is the stage that pays.** Context precision 0.43 → 0.83, prompt
+  tokens 990 → 232 (−77%), and abstention correctness doubles (0.333 → 0.667).
+- **Grading also over-abstains.** It is the only reason `policy` falls to 0.778
+  and `distractor` to 0.875: on `pii-to-llm` and `personal-claude-account` the
+  corpus states the rule plainly, dense-only answers correctly, and the full
+  pipeline refuses. That is a real regression, and it is why the corrective
+  loop is a trade rather than a free win.
+- **Query rewrite has no measurable effect.** Full and full−rewrite agree on
+  every metric to three decimals. An earlier 14-question run credited rewrite
+  with +3.5pp correctness; that was noise, and it is the clearest argument in
+  this repo for sizing an eval set before trusting it.
+
+**What the measurements do not support:** the `lexical` category was built to
+show BM25 winning on exact identifiers and it did not — dense retrieves
+`KV-2025-441` and `IR-4` perfectly well at this corpus size. Recall is also
+saturated at 1.000 for every retriever, because `_hit` only requires one of the
+expected documents and there are only eight to choose from. Recall cannot
+discriminate anything here regardless of how the questions are written; that is
+a property of the metric and the corpus size, not of the question set.
+
+Six of 53 cases fail under the full pipeline. They are kept deliberately: four
+are the over-abstention and cross-document-conflation bugs named above, and the
+set exists to keep catching them.
 
 ## Limits
 
