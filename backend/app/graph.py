@@ -27,6 +27,7 @@ class RAGState(TypedDict, total=False):
     blocked: bool
     cache_hit: bool
     use_cache: bool
+    principal: str
     retries: int
     gen_retries: int
     grade: str
@@ -159,12 +160,15 @@ class Pipeline:
         if not state.get("use_cache", True):
             tracer.span("cache", "skipped")
             return {"cache_hit": False}
-        hit = await self.cache.get_semantic(state["question"])
+        principal = state.get("principal") or "dev"
+        hit = await self.cache.get_semantic(principal, state["question"])
         if hit:
             tracer.span("cache", "exact hit")
             return {**hit, "cache_hit": True}
         vecs = await embed_texts([state["question"]])
-        near = await self.cache.nearest_semantic(vecs[0], settings.semantic_cache_threshold)
+        near = await self.cache.nearest_semantic(
+            principal, vecs[0], settings.semantic_cache_threshold
+        )
         if near:
             tracer.span("cache", "near-dup hit")
             return {**near, "cache_hit": True}
@@ -360,7 +364,9 @@ class Pipeline:
             "faithfulness": 1.0,
         }
 
-    async def ainvoke(self, question: str, use_cache: bool = True) -> dict[str, Any]:
+    async def ainvoke(
+        self, question: str, use_cache: bool = True, principal: str = "dev"
+    ) -> dict[str, Any]:
         tracer = Tracer()
         init: RAGState = {
             "question": question,
@@ -368,6 +374,7 @@ class Pipeline:
             "retries": 0,
             "gen_retries": 0,
             "use_cache": use_cache,
+            "principal": principal,
         }
         result = await self.graph.ainvoke(init)
         if result.get("cache_hit") and result.get("answer") is not None:
@@ -418,9 +425,9 @@ class Pipeline:
         if use_cache and grounded and payload["answer"]:
             vec = result.get("query_vec")
             if vec:
-                await self.cache.remember_query_vec(question, vec, payload)
+                await self.cache.remember_query_vec(principal, question, vec, payload)
             else:
-                await self.cache.set_semantic(question, payload)
+                await self.cache.set_semantic(principal, question, payload)
         return payload
 
     def _build_generate_prompt(self, state: RAGState) -> tuple[str, str, int]:
@@ -474,7 +481,9 @@ class Pipeline:
             "faithfulness": result.get("faithfulness"),
         }
 
-    async def astream(self, question: str, use_cache: bool = True) -> AsyncIterator[dict[str, Any]]:
+    async def astream(
+        self, question: str, use_cache: bool = True, principal: str = "dev"
+    ) -> AsyncIterator[dict[str, Any]]:
         tracer = Tracer()
         state: RAGState = {
             "question": question,
@@ -482,6 +491,7 @@ class Pipeline:
             "retries": 0,
             "gen_retries": 0,
             "use_cache": use_cache,
+            "principal": principal,
         }
 
         async def apply(node_fn):
@@ -570,7 +580,7 @@ class Pipeline:
         if use_cache and grounded and payload["answer"]:
             vec = state.get("query_vec")
             if vec:
-                await self.cache.remember_query_vec(question, vec, payload)
+                await self.cache.remember_query_vec(principal, question, vec, payload)
             else:
-                await self.cache.set_semantic(question, payload)
+                await self.cache.set_semantic(principal, question, payload)
         yield {"type": "done", "data": payload}

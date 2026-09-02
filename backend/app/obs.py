@@ -108,19 +108,27 @@ class Cache:
     async def set_embedding(self, text: str, vector: list[float]) -> None:
         await self.r.set(f"emb:{content_hash(text)}", json.dumps(vector), ex=60 * 60 * 24 * 14)
 
-    async def get_semantic(self, question: str) -> dict[str, Any] | None:
-        raw = await self.r.get(f"qa:{content_hash(question.strip().lower())}")
+    @staticmethod
+    def _qa_key(principal: str, question: str) -> str:
+        # The principal is part of the key, not a filter applied after the
+        # read. Answers are built from whatever the caller may retrieve, so a
+        # shared key would serve one caller's answer to another.
+        return f"qa:{principal}:{content_hash(question.strip().lower())}"
+
+    async def get_semantic(self, principal: str, question: str) -> dict[str, Any] | None:
+        raw = await self.r.get(self._qa_key(principal, question))
         return json.loads(raw) if raw else None
 
-    async def set_semantic(self, question: str, payload: dict[str, Any]) -> None:
+    async def set_semantic(self, principal: str, question: str, payload: dict[str, Any]) -> None:
         await self.r.set(
-            f"qa:{content_hash(question.strip().lower())}",
+            self._qa_key(principal, question),
             json.dumps(payload, ensure_ascii=False),
             ex=60 * 60 * 12,
         )
 
     async def nearest_semantic(
         self,
+        principal: str,
         query_vec: list[float],
         threshold: float,
     ) -> dict[str, Any] | None:
@@ -134,11 +142,11 @@ class Cache:
         entry, which is fine at handbook QPS and is the first thing to replace
         under load.
         """
-        keys = await self.r.lrange("qa:recent", 0, 199)
+        keys = await self.r.lrange(f"qa:recent:{principal}", 0, 199)
         best: tuple[float, dict[str, Any]] | None = None
         for key in keys:
-            blob = await self.r.get(f"qa:vec:{key}")
-            cached = await self.r.get(f"qa:{key}")
+            blob = await self.r.get(f"qa:vec:{principal}:{key}")
+            cached = await self.r.get(f"qa:{principal}:{key}")
             if not blob or not cached:
                 continue
             vec = json.loads(blob)
@@ -147,12 +155,14 @@ class Cache:
                 best = (sim, json.loads(cached))
         return None if best is None else best[1]
 
-    async def remember_query_vec(self, question: str, vec: list[float], payload: dict[str, Any]) -> None:
+    async def remember_query_vec(
+        self, principal: str, question: str, vec: list[float], payload: dict[str, Any]
+    ) -> None:
         key = content_hash(question.strip().lower())
-        await self.set_semantic(question, payload)
-        await self.r.set(f"qa:vec:{key}", json.dumps(vec), ex=60 * 60 * 12)
-        await self.r.lpush("qa:recent", key)
-        await self.r.ltrim("qa:recent", 0, 199)
+        await self.set_semantic(principal, question, payload)
+        await self.r.set(f"qa:vec:{principal}:{key}", json.dumps(vec), ex=60 * 60 * 12)
+        await self.r.lpush(f"qa:recent:{principal}", key)
+        await self.r.ltrim(f"qa:recent:{principal}", 0, 199)
 
 
 def _cosine(a: list[float], b: list[float]) -> float:

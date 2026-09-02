@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,6 +28,18 @@ class Settings(BaseSettings):
 
     enable_cross_encoder: bool = True
     cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+    # "principal:secret,principal:secret". Empty disables auth entirely and
+    # every caller becomes the dev principal -- see app/auth.py.
+    #
+    # The alias is load-bearing: without it pydantic-settings binds this field
+    # to API_KEYS, silently ignores the ATLAS_API_KEYS the deployment sets, and
+    # the service starts with auth off while looking configured.
+    api_keys: str = Field("", validation_alias="ATLAS_API_KEYS")
+    rate_limit_per_minute: int = 60
+    # Same-origin in the container image (nginx proxies /api), so this only
+    # needs the Vite dev server.
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     embedded_worker: bool = True
     log_level: str = "INFO"

@@ -8,10 +8,18 @@ from pathlib import Path
 from typing import Annotated
 
 import structlog
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse, StreamingResponse
 
+from app.auth import (
+    auth_enabled,
+    cors_origins,
+    enforce_rate_limit,
+    key_from_headers,
+    log_auth_mode,
+    resolve_principal,
+)
 from app.chunking import parse_file
 from app.config import settings
 from app.evaluate import run_eval
@@ -71,8 +79,34 @@ async def _consume_index_jobs() -> None:
 StateDep = Annotated[AppState, Depends(get_state)]
 
 
+async def require_principal(
+    s: StateDep,
+    x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+    authorization: Annotated[str | None, Header()] = None,
+) -> str:
+    """Authenticate the caller and charge the request against its budget.
+
+    Rate limiting lives here rather than in middleware so it runs after the key
+    is known: an unauthenticated flood should be rejected as 401 without
+    consuming anyone's quota.
+    """
+    principal = resolve_principal(key_from_headers(x_api_key, authorization))
+    if principal is None:
+        raise HTTPException(
+            status_code=401,
+            detail="missing or invalid API key",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    await enforce_rate_limit(s.redis, principal)
+    return principal
+
+
+PrincipalDep = Annotated[str, Depends(require_principal)]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    log_auth_mode()
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
     state.redis = create_redis()
     state.cache = Cache(state.redis)
@@ -99,11 +133,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Atlas AI", default_response_class=ORJSONResponse, lifespan=lifespan)
+# allow_origins=["*"] with credentials is the combination that turns a
+# browser into a confused deputy. In the image the frontend is same-origin
+# behind nginx, so this list only needs the Vite dev server.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=cors_origins(),
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type", "X-API-Key", "Authorization"],
 )
 
 
@@ -113,16 +150,17 @@ async def health():
         "ok": True,
         "llm": llm_configured(),
         "kafka": bool(settings.kafka_brokers),
+        "auth": auth_enabled(),
     }
 
 
 @app.get("/api/v1/documents")
-async def list_docs(s: StateDep):
+async def list_docs(s: StateDep, principal: PrincipalDep):
     return await s.catalog.list()
 
 
 @app.post("/api/v1/documents")
-async def upload_doc(s: StateDep, file: UploadFile = File(...)):
+async def upload_doc(s: StateDep, principal: PrincipalDep, file: UploadFile = File(...)):
     raw = await file.read()
     doc_id = uuid.uuid4().hex[:12]
     filename = file.filename or "upload.bin"
@@ -142,7 +180,7 @@ async def upload_doc(s: StateDep, file: UploadFile = File(...)):
 
 
 @app.post("/api/v1/documents/seed")
-async def seed(s: StateDep):
+async def seed(s: StateDep, principal: PrincipalDep):
     root = Path(settings.samples_dir) / "corpus"
     if not root.exists():
         root = Path(__file__).resolve().parents[2] / "samples" / "corpus"
@@ -172,7 +210,7 @@ async def seed(s: StateDep):
 
 
 @app.delete("/api/v1/documents/{doc_id}")
-async def delete_doc(doc_id: str, s: StateDep):
+async def delete_doc(doc_id: str, s: StateDep, principal: PrincipalDep):
     s.vectors.delete_doc(doc_id)
     await s.catalog.delete(doc_id)
     s.bm25.rebuild(s.vectors.scroll_all())
@@ -181,8 +219,10 @@ async def delete_doc(doc_id: str, s: StateDep):
 
 
 @app.post("/api/v1/query", response_model=QueryResponse)
-async def query(req: QueryRequest, s: StateDep):
-    payload = await s.pipeline.ainvoke(req.question, use_cache=req.use_cache)
+async def query(req: QueryRequest, s: StateDep, principal: PrincipalDep):
+    payload = await s.pipeline.ainvoke(
+        req.question, use_cache=req.use_cache, principal=principal
+    )
     obs.record_query(
         retrieval_ms=payload["retrieval_ms"],
         prompt_tokens=payload["prompt_tokens"],
@@ -192,9 +232,11 @@ async def query(req: QueryRequest, s: StateDep):
 
 
 @app.post("/api/v1/query/stream")
-async def query_stream(req: QueryRequest, s: StateDep):
+async def query_stream(req: QueryRequest, s: StateDep, principal: PrincipalDep):
     async def events():
-        async for evt in s.pipeline.astream(req.question, use_cache=req.use_cache):
+        async for evt in s.pipeline.astream(
+            req.question, use_cache=req.use_cache, principal=principal
+        ):
             if evt["type"] == "done":
                 data = evt["data"]
                 obs.record_query(
@@ -208,7 +250,7 @@ async def query_stream(req: QueryRequest, s: StateDep):
 
 
 @app.post("/api/v1/eval")
-async def eval_run(s: StateDep, limit: int | None = None):
+async def eval_run(s: StateDep, principal: PrincipalDep, limit: int | None = None):
     try:
         return await run_eval(s.pipeline, limit=limit)
     except FileNotFoundError as exc:
@@ -216,6 +258,6 @@ async def eval_run(s: StateDep, limit: int | None = None):
 
 
 @app.get("/api/v1/metrics", response_model=MetricsSnapshot)
-async def metrics(s: StateDep):
+async def metrics(s: StateDep, principal: PrincipalDep):
     docs, chunks = await s.catalog.counts()
     return obs.snapshot(docs, chunks)
