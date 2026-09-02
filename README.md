@@ -277,12 +277,21 @@ for a handbook-scale corpus, with the replacement named.
 
 **Runs as a single replica.** The BM25 index and the SLI counters both live in
 process memory. A `bm25:rev` counter in Redis invalidates the snapshot when
-another process reindexes, so correctness holds across the API and the worker
--- but every process still keeps its own copy and rebuilds it with a full
-Qdrant scroll, synchronously, inside the request that noticed the change.
-`Pipeline.warm()` moves that cost to startup; it does not remove it. Past a few
-tens of thousands of chunks the rebuild belongs in a background task, or the
-sparse index belongs in Qdrant alongside the dense one.
+another process reindexes, so correctness holds across the API and the worker,
+but every process still keeps its own copy.
+
+No request pays to rebuild it. A background task polls the revision every
+`BM25_REFRESH_SECONDS` and rebuilds in a worker thread, because both the Qdrant
+scroll and the index build are synchronous and O(corpus) -- on the event loop
+they stall every other in-flight request, which is how a cold rebuild once put
+19s into a p95. Measured across an ingest, retrieval stays at 232ms against a
+130-324ms steady-state baseline, and the worker's reindex shows up in the API
+roughly two seconds later.
+
+The remaining cost is memory and duplicated work: every replica rebuilds the
+whole corpus for itself. Past a few tens of thousands of chunks the sparse
+index belongs in Qdrant alongside the dense one, which removes the per-process
+copy entirely.
 
 **`/api/v1/metrics` is per-process.** With more than one replica each pod
 reports only its own traffic. Horizontal scaling needs the counters exported to
