@@ -12,7 +12,7 @@ Production RAG platform for internal handbook Q&A. Hybrid retrieval, a correctiv
 | **Generation** | SSE streaming answers; token-budget packing on deduplicated parent passages |
 | **Orchestration** | LangGraph: guard → cache → rewrite → retrieve → rerank → grade → compress → generate → faithfulness |
 | **Quality** | 53-question golden set tagged by failure mode — recall, precision, faithfulness, correctness, hallucination rate, abstention accuracy, plus a stage-by-stage ablation |
-| **Safety** | User prompt-injection blocking + indirect corpus injection handling (`08-injection-bait.md`) |
+| **Safety** | API-key auth with per-principal cache isolation and rate limiting; user prompt-injection blocking + indirect corpus injection handling (`08-injection-bait.md`) |
 | **Ops** | Retrieval p50/p95 separate from end-to-end latency; Redis embedding + semantic QA cache |
 | **Ingest** | Async worker queue (Redis Streams locally, Kafka/Redpanda in production) |
 
@@ -102,8 +102,11 @@ docker compose --profile kafka up -d
 
 ## API
 
+Every `/api/v1` route requires an API key (see [Auth](#auth)); `/health` does not.
+
 | Method | Path | Description |
 | --- | --- | --- |
+| `GET` | `/health` | Liveness, plus whether auth and an LLM are configured |
 | `POST` | `/api/v1/query` | Run the RAG graph (non-streaming) |
 | `POST` | `/api/v1/query/stream` | Same graph, streams answer tokens via SSE |
 | `POST` | `/api/v1/eval` | Run offline golden-set eval |
@@ -218,6 +221,44 @@ Six of 53 cases fail under the full pipeline. They are kept deliberately: four
 are the over-abstention and cross-document-conflation bugs named above, and the
 set exists to keep catching them.
 
+## Auth
+
+Every `/api/v1` route requires a key; `/health` stays open so probes work.
+
+```bash
+curl -H "X-API-Key: $ATLAS_API_KEY" localhost:8000/api/v1/metrics
+curl -H "Authorization: Bearer $ATLAS_API_KEY" localhost:8000/api/v1/metrics
+```
+
+Keys are configured as `ATLAS_API_KEYS="principal:secret,principal:secret"`.
+The principal is the unit of isolation, not just a label:
+
+- **The semantic cache is keyed by it.** `qa:{principal}:{hash}`, and the
+  near-duplicate list is per principal too. Without that, a cached answer built
+  from one caller's documents would be served to the next caller asking the
+  same question — the cache would quietly undo the access control.
+- **Rate limits are charged to it.** A fixed window of
+  `RATE_LIMIT_PER_MINUTE` per principal per minute, one Redis `INCR` per
+  request. A fixed window permits a 2x burst across a boundary; a sliding
+  window costs a sorted set and a read-modify-write per call.
+- **Key comparison walks every candidate** with `secrets.compare_digest`
+  rather than a dict lookup, which would short-circuit and leak key length and
+  prefix through timing.
+
+**Leaving `ATLAS_API_KEYS` empty disables auth** and makes every caller the
+`dev` principal. Quick start and CI run that way on purpose, and `/health`
+reports `"auth": false` so it is never a silent default.
+
+**The browser never holds the key.** nginx injects it server-side when
+proxying `/api/`, so the SPA calls a same-origin path with no credential in
+its bundle. `scripts/k8s-deploy.ps1` generates the key on first deploy and
+leaves it alone afterwards — rotating on every deploy would invalidate it for
+no reason. Pass `-RotateApiKey` to replace it:
+
+```powershell
+kubectl get secret atlas-auth -n atlas -o jsonpath='{.data.ATLAS_FRONTEND_KEY}' | base64 -d
+```
+
 ## Limits
 
 Measured and known, not hidden. Each of these is a deliberate stopping point
@@ -236,10 +277,13 @@ sparse index belongs in Qdrant alongside the dense one.
 reports only its own traffic. Horizontal scaling needs the counters exported to
 Prometheus rather than summarised in the app.
 
-**No authentication.** Query, upload, and delete are all open, and CORS is
-`*`. This is a demo deployment, not a hardened one. Adding auth also means
-keying the semantic cache per tenant: today `qa:` keys hash the question text
-alone, so two users asking the same thing would share an answer.
+**Auth is service-level, not user identity.** Every `/api/v1` route requires
+an API key mapped to a named principal, and the semantic cache and rate limit
+budget are both keyed by that principal. What it does not have is per-user
+login: the nginx container presents one key on behalf of every browser that
+reaches it, so anyone who can load the page can query. Real user identity means
+a session layer in front, and principals would come from it rather than from a
+secret.
 
 **The semantic cache scans linearly.** A miss walks up to 200 recent entries
 with two Redis round trips each before falling through to the graph. A second
