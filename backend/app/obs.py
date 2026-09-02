@@ -19,9 +19,10 @@ def _percentile(values: list[float], p: float) -> float:
 class Observability:
     """In-process SLIs plus a Redis-backed trace ring.
 
-    LangSmith/Phoenix are fine in a company that already pays for them.
-    A portfolio demo should not require a SaaS login to show a trace —
-    the product itself is the observability surface.
+    Traces are served by the app itself rather than shipped to LangSmith or
+    Phoenix: one less external dependency to run, and the trace is visible to
+    anyone who can already reach the UI. The cost is that these counters live
+    in the process, so they are per-replica -- see the scaling note in README.
     """
 
     def __init__(self) -> None:
@@ -125,9 +126,13 @@ class Cache:
     ) -> dict[str, Any] | None:
         """Exact-question cache is cheap; this catches paraphrases.
 
-        We keep a small Redis ZSET of recent query embeddings rather than
-        standing up a second vector index. At this QPS it is enough, and
-        the interview story is 'cache the question, not just the chunk'.
+        Caching the question rather than only the chunk is what takes the whole
+        graph off the hot path when someone asks the same thing twice.
+
+        The index is a 200-entry Redis list scanned linearly -- a deliberate
+        stand-in for a second vector collection. It costs two round trips per
+        entry, which is fine at handbook QPS and is the first thing to replace
+        under load.
         """
         keys = await self.r.lrange("qa:recent", 0, 199)
         best: tuple[float, dict[str, Any]] | None = None
