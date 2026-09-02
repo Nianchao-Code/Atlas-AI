@@ -111,13 +111,8 @@ async def test_semantic_cache_is_scoped_per_principal():
     assert (await cache.get_semantic("bob", "what is the leave policy")) is None
 
 
-async def test_near_duplicate_cache_is_scoped_per_principal():
-    cache = Cache(_FakeRedis())
-    vec = [1.0, 0.0, 0.0]
-    await cache.remember_query_vec("alice", "leave policy", vec, {"answer": "15 days"})
-
-    assert (await cache.nearest_semantic("alice", vec, threshold=0.9)) == {"answer": "15 days"}
-    assert (await cache.nearest_semantic("bob", vec, threshold=0.9)) is None
+# The paraphrase half of this moved to Qdrant; its principal scoping is
+# covered in test_qa_cache.py, where the filter can be inspected directly.
 
 
 # ---------------------------------------------------------- rate limiting ---
