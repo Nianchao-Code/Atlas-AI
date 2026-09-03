@@ -65,6 +65,28 @@ class EvalCaseResult(BaseModel):
     answer: str
 
 
+class ModelSpend(BaseModel):
+    calls: int
+    prompt_tokens: int
+    completion_tokens: int
+    usd: float | None = None
+
+
+class RunCost(BaseModel):
+    """What a run actually spent.
+
+    Tokens are measured. `usd` is arithmetic over a configurable rate table,
+    and `rates` echoes the table used so the figure can be checked instead of
+    believed. A model with no configured rate leaves `usd` as null rather than
+    zero -- zero reads as free.
+    """
+
+    by_model: dict[str, ModelSpend] = Field(default_factory=dict)
+    total_usd: float | None = None
+    per_case_usd: float | None = None
+    rates: dict[str, list[float]] = Field(default_factory=dict)
+
+
 class EvalReport(BaseModel):
     n: int
     retrieval_recall: float
@@ -77,6 +99,7 @@ class EvalReport(BaseModel):
     mean_prompt_tokens: float
     naive_prompt_tokens: float
     token_reduction_pct: float
+    cost: RunCost = Field(default_factory=RunCost)
     cases: list[EvalCaseResult]
 
 

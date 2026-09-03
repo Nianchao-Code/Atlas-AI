@@ -3,6 +3,16 @@ name: CI
 on:
   push:
   pull_request:
+  # So the paid gate can be run against a commit on demand rather than only
+  # when something lands on main.
+  workflow_dispatch:
+
+# Three commits pushed to main in a row used to pay for three full golden-set
+# runs, and only the last one's verdict meant anything. Superseded runs are
+# cancelled instead.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   backend:
@@ -58,7 +68,12 @@ jobs:
 
   eval-full:
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # Pushes to main and manual runs only: every execution of this job is a
+    # real charge against the model account, which is not what a feature
+    # branch or a PR update should cost.
+    if: >-
+      github.ref == 'refs/heads/main'
+      && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     services:
       redis:
         image: redis:7-alpine

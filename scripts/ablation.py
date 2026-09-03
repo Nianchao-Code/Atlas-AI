@@ -35,6 +35,7 @@ from app.llm import embed_texts, llm_configured  # noqa: E402
 from app.obs import Cache  # noqa: E402
 from app.redis_client import create_redis  # noqa: E402
 from app.rerank import reranker_available  # noqa: E402
+from app.usage import cost_usd, ledger, since  # noqa: E402
 from app.vectors import VectorStore  # noqa: E402
 
 
@@ -215,6 +216,7 @@ async def main() -> int:
             "        and the rows after it run with reranking off, as deployed."
         )
 
+    spent_at_start = ledger.snapshot()
     for variant in VARIANTS:
         if variant.label in raw:
             continue
@@ -227,6 +229,7 @@ async def main() -> int:
         # Nothing to warm: both retrievers read Qdrant, so there is no
         # process-local snapshot for a first measured query to pay for.
         pipeline = Pipeline(cache, vectors, config=variant.config)
+        spent_before_variant = ledger.snapshot()
         runs: list[dict] = []
         for i in range(args.repeats):
             t0 = time.time()
@@ -240,6 +243,9 @@ async def main() -> int:
                 file=sys.stderr,
                 flush=True,
             )
+        _, variant_usd = cost_usd(since(spent_before_variant))
+        if variant_usd is not None:
+            print(f"  {variant.label} cost ${variant_usd:.4f}", file=sys.stderr)
         raw[variant.label] = runs
         rows.append(
             {
@@ -253,6 +259,17 @@ async def main() -> int:
     await r.aclose()
 
     table = render_markdown(rows, args.repeats, len(cases))
+    used = since(spent_at_start)
+    per_model, total_usd = cost_usd(used)
+    for model, u in sorted(used.items()):
+        usd = per_model.get(model)
+        print(
+            f"  {model:26} {u.calls:5} calls  {u.prompt_tokens:9} in  "
+            f"{u.completion_tokens:8} out  " + (f"${usd:.4f}" if usd is not None else "unpriced"),
+            file=sys.stderr,
+        )
+    if total_usd is not None:
+        print(f"  ablation total ${total_usd:.4f}", file=sys.stderr)
     print(f"\nTotal wall clock: {time.time() - started:.0f}s\n", file=sys.stderr)
     print(table)
 

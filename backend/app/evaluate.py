@@ -8,7 +8,8 @@ from statistics import quantiles
 from app.config import settings
 from app.graph import Pipeline
 from app.llm import chat_json, llm_configured
-from app.models import EvalCaseResult, EvalReport
+from app.models import EvalCaseResult, EvalReport, ModelSpend, RunCost
+from app.usage import cost_usd, ledger, rates, since
 
 
 def load_golden() -> list[dict]:
@@ -30,6 +31,25 @@ def load_golden() -> list[dict]:
             return json.loads(path.read_text(encoding="utf-8"))
     searched = ", ".join(str(p) for p in seen)
     raise FileNotFoundError(f"golden.json not found. Looked in: {searched}")
+
+
+def _cost_of(baseline: dict, n_cases: int) -> RunCost:
+    used = since(baseline)
+    per_model, total = cost_usd(used)
+    return RunCost(
+        by_model={
+            model: ModelSpend(
+                calls=u.calls,
+                prompt_tokens=u.prompt_tokens,
+                completion_tokens=u.completion_tokens,
+                usd=per_model.get(model),
+            )
+            for model, u in sorted(used.items())
+        },
+        total_usd=total,
+        per_case_usd=round(total / n_cases, 5) if total is not None and n_cases else None,
+        rates={m: [i, o] for m, (i, o) in sorted(rates().items())},
+    )
 
 
 def _hit(expected_docs: list[str], filenames: list[str]) -> bool:
@@ -74,6 +94,10 @@ async def run_eval(
     cases = load_golden()[: limit or None]
     results: list[EvalCaseResult] = []
     naive_tokens: list[int] = []
+    # A baseline rather than a reset: another harness phase may already be
+    # counting, and erasing its total to measure this one is not a trade worth
+    # making.
+    spent_before = ledger.snapshot()
 
     for case in cases:
         q = case["question"]
@@ -120,6 +144,8 @@ async def run_eval(
         if on_case is not None:
             await on_case(len(results), len(cases))
 
+    cost = _cost_of(spent_before, len(results))
+
     n = len(results) or 1
     recall_cases = [r for r, c in zip(results, cases, strict=True) if c.get("expected_docs")]
     abstain_cases = [(r, c) for r, c in zip(results, cases, strict=True) if c.get("expect_abstain")]
@@ -147,5 +173,6 @@ async def run_eval(
         mean_prompt_tokens=round(mean_prompt, 1),
         naive_prompt_tokens=round(mean_naive, 1),
         token_reduction_pct=round(reduction, 1),
+        cost=cost,
         cases=results,
     )

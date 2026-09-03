@@ -28,6 +28,27 @@ from app.store_docs import Catalog, IndexQueue
 from app.vectors import VectorStore
 
 
+def print_cost(cost, label: str = "") -> None:
+    """One line per model plus a total, so a run says what it charged.
+
+    Printed even when the gate fails: the money was spent either way, and a
+    failed run is exactly when you want to know what it cost.
+    """
+    if not cost.by_model:
+        return
+    prefix = f"{label} " if label else ""
+    for model, spend in cost.by_model.items():
+        usd = f"${spend.usd:.4f}" if spend.usd is not None else "unpriced"
+        print(
+            f"  {prefix}{model:26} {spend.calls:5} calls  "
+            f"{spend.prompt_tokens:8} in  {spend.completion_tokens:7} out  {usd}",
+            file=sys.stderr,
+        )
+    if cost.total_usd is not None:
+        per = f", ${cost.per_case_usd:.5f}/case" if cost.per_case_usd else ""
+        print(f"  {prefix}total ${cost.total_usd:.4f}{per}", file=sys.stderr)
+
+
 def load_thresholds(mode: str) -> dict:
     path = ROOT / "samples" / "eval" / "thresholds.json"
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -128,6 +149,7 @@ async def run_gate(mode: str) -> int:
             failed.append(name)
 
     print(json.dumps(report.model_dump(), indent=2)[:2000])
+    print_cost(report.cost)
     if failed:
         print(f"Eval gate failed: {', '.join(failed)}", file=sys.stderr)
         return 1

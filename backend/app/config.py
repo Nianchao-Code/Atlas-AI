@@ -11,6 +11,16 @@ class Settings(BaseSettings):
     cheap_model: str = "gpt-4o-mini"
     embedding_model: str = "text-embedding-3-small"
     embedding_dim: int = 1536
+    # USD per million tokens, {model: [input, output]}. Used only to turn the
+    # measured token counts into a dollar figure; the tokens are the
+    # measurement and are reported either way. Taken from the published price
+    # list and not authoritative -- a price compiled into source is wrong the
+    # moment it is committed, so it lives here where one edit fixes it.
+    model_prices: str = (
+        '{"gpt-4o": [2.50, 10.00],'
+        ' "gpt-4o-mini": [0.15, 0.60],'
+        ' "text-embedding-3-small": [0.02, 0.0]}'
+    )
 
     redis_url: str = "redis://localhost:6379/0"
     qdrant_url: str = "http://localhost:6333"
