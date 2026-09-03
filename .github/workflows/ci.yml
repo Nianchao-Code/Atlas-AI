@@ -43,6 +43,10 @@ jobs:
         run: ruff check .
       - name: Format check
         run: ruff format --check .
+      # The README's deep dives live in docs/, so most of its links are now
+      # cross-file. Those look right in a diff and 404 for the reader.
+      - name: Check markdown links
+        run: python scripts/check_links.py
       - name: Typecheck
         working-directory: backend
         run: mypy app

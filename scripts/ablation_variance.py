@@ -7,7 +7,7 @@ identical and still disagree, because generation and the judge are both
 sampled. When they do, the size of that disagreement is the smallest gap the
 harness can distinguish, and any smaller gap in the table means nothing.
 
-    python scripts/ablation_variance.py docs/ablation.json
+    python scripts/ablation_variance.py docs/data/ablation.json
 """
 
 from __future__ import annotations
