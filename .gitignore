@@ -34,3 +34,7 @@ redis_data/
 .DS_Store
 Thumbs.db
 *.log
+
+# Regenerate with scripts/generate_corpus.py -- deterministic from --seed, so
+# 13MB of derived files does not belong in git.
+samples/distractors/

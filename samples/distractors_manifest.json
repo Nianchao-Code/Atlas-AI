@@ -1,0 +1,29 @@
+{
+  "docs": 10000,
+  "seed": 20260903,
+  "kinds": {
+    "training": 567,
+    "brief": 573,
+    "role": 558,
+    "release": 555,
+    "evaluation": 578,
+    "spec": 601,
+    "status": 572,
+    "contract": 565,
+    "audit": 587,
+    "meeting": 594,
+    "budget": 554,
+    "research": 579,
+    "postmortem": 594,
+    "testplan": 520,
+    "schema": 551,
+    "facilities": 603,
+    "adr": 557,
+    "near-dup": 196,
+    "oncall": 16,
+    "leave": 22,
+    "vendor": 22,
+    "retention": 16,
+    "incident": 20
+  }
+}
