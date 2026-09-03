@@ -119,6 +119,18 @@ class QACache:
             ],
         )
 
+    def clear(self) -> None:
+        """Drop every cached answer.
+
+        For demos and manual runs, where a cache hit is the wrong thing to
+        observe: recording the graph trace of a hit shows guard -> cache -> done
+        and says nothing about retrieval.
+        """
+        self.client.delete(
+            collection_name=self.collection,
+            points_selector=models.FilterSelector(filter=models.Filter()),
+        )
+
     def purge_expired(self) -> None:
         """Qdrant has no TTL, so expiry is a payload field plus this sweep.
 

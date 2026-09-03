@@ -7,14 +7,15 @@ Production RAG platform for internal handbook Q&A. Hybrid retrieval, a correctiv
 ![Atlas answering a handbook question, with the graph trace and cited sources filling in as the pipeline runs](docs/demo.gif)
 
 One question against the deployed stack, uncut: guard, a cache miss, query
-rewrite, hybrid retrieval (recorded before fusion moved into Qdrant, so the
-trace reads `dense=24 bm25=12 rrf=24` where it now reads
-`dense+sparse rrf=24`), the rerank node cutting
-24 candidates to 12, LLM grading, parent-passage packing, a streamed answer,
-and the faithfulness gate scoring it 1.00 — 3.9s end to end. The cross-encoder
-is off in this deployment, so that step is a truncation rather than a rerank;
-the [ablation](#what-each-stage-actually-buys) is why. Recorded by
-`scripts/capture_demo.py`, which drives the real UI.
+rewrite, hybrid retrieval in a single Qdrant call
+(`dense+sparse rrf=24 docs=8`, 213ms), the rerank node cutting 24 candidates to
+12, LLM grading, parent-passage packing, a streamed answer, and the
+faithfulness gate scoring it 1.00 — 4.7s end to end. The cross-encoder is off in
+this deployment, so that step is a truncation rather than a rerank; the
+[ablation](#what-each-stage-actually-buys) is why. Recorded by
+`scripts/capture_demo.py`, which drives the real UI and refuses to write a GIF
+whose trace shows a cache hit — recording the wrong pipeline is a two-word
+difference nobody checks before committing the frames.
 
 ## Highlights
 
@@ -716,7 +717,12 @@ and generation would only add a model's sampling to the comparison:
 replicas: 2
   count   agree   27
   sparse  agree   7 chunks, top=['seed-02-leave:1', 'seed-06-seattle:1']
+  dense   agree   8 chunks, top=['seed-02-leave:1', 'seed-02-leave:3']
+  hybrid  agree   8 chunks, top=['seed-02-leave:1', 'seed-06-seattle:1']
+PASS
 ```
+
+Byte-identical rankings from both pods for all three retrievers.
 
 ## Keeping Redis and Qdrant in agreement
 
@@ -769,10 +775,25 @@ settled      a second pass reports clean: True
 PASS
 ```
 
-The requeue path is covered by unit tests but not by this probe: re-indexing
-calls the embedding API, and the account behind it is out of credits. That half
-is asserted, not observed, and this line is here so nobody reads the `PASS`
-above as covering it.
+The third repair — re-index a document whose vectors are gone — needs the
+embedding API, so it has its own probe. `scripts/requeue_probe.py` deletes one
+seed document's vectors while leaving its record claiming `ready`, which is
+exactly the state a rebuilt collection leaves behind:
+
+```
+start        27 points, seed-02-leave is ready/5 chunks
+injured      22 points, catalogue still says ready
+dry run      requeued=['seed-02-leave'] marked_failed=[]
+reconciled   requeued=['seed-02-leave']
+reindexed    27 points, seed-02-leave is ready/5 chunks
+retrievable  cited=['seed-02-leave']
+settled      a second pass reports clean: True
+PASS
+```
+
+Destructive by design and self-healing by the thing under test: the corpus ends
+where it started, and the repaired document is cited in an answer rather than
+merely counted.
 
 ## The eval endpoint became a job
 
@@ -808,7 +829,9 @@ heartbeats as it goes, and a record that stops beating is reported as
 refreshes the single-flight claim, so the two cannot disagree about whether a
 run is still alive — and a crashed process cannot block every future run.
 
-Verified against the deployed stack:
+Verified against the deployed stack, twice. First the machinery, while the
+account behind the model calls happened to be out of credits — which turned out
+to be a useful accident, because it exercised the failure path:
 
 ```
 POST         202 in 14ms  job=20f0dd8ac6d5 0/53
@@ -816,18 +839,26 @@ second click job=20f0dd8ac6d5 joined=True (one run, not two)
 final        status=failed 0/53 error=RateLimitError: 429 ... no credits remaining
 ```
 
-Three things in that trace. The start returns in **14 milliseconds** where it
-used to hold the connection for minutes. The second click **joined** the run
-instead of starting another. And the case count is known at `0/53` before the
-first question finishes, rather than `0/?` for however long one model call
-takes — a detail worth fixing, because "0 of ?" is the same non-answer the old
-spinner gave.
+The start returns in **14 milliseconds** where it used to hold the connection
+for minutes; the second click **joined** rather than starting a second paid run;
+the case count is known at `0/53` before the first question finishes rather than
+`0/?`, because "0 of ?" is the same non-answer the old spinner gave; and a
+provider error is reported *through* the job instead of vanishing.
 
-The `failed` is real and is not the job machinery: this ran while the account
-behind the embedding and generation calls had no credits. **What is verified
-here is the job, not the eval** — a successful run with progress climbing
-53 cases has not been observed since the change, and this line is here so the
-`202` above is not read as covering it.
+Then the whole golden set, once there were credits to run it with:
+
+```
+POST 202 in 18ms  job=554ea24e8810  0/53
+   1/53  (9s)  ...  53/53  (281s)
+final: done  53/53  281s
+  recall 0.961  faithful 0.974  correct 0.943  halluc 0.000
+  abstention 0.857  tokens 288 (naive 542, -46.8%)
+  TOTAL $0.0574  ($0.00108/case)
+```
+
+All six gate thresholds pass, and the bill matches what
+[the ledger](#what-a-run-costs) predicted from three questions to within a
+tenth of a cent.
 
 With the long request gone, the proxy timeouts it forced came down with it:
 600s to 120s in the frontend nginx and 3600 to 120 on the Ingress. The longest

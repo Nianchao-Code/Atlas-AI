@@ -4,11 +4,15 @@ Drives the real UI; nothing here is mocked.
 
     kubectl port-forward svc/frontend 8080:80 -n atlas
 
-    # Clear the semantic cache first, or the run is an exact cache hit and the
-    # graph trace shows guard -> cache and stops -- which is the opposite of
-    # what the GIF is meant to show.
+    # Clear BOTH caches first, or the run is a cache hit and the graph trace
+    # shows guard -> cache and stops, which is the opposite of what the GIF is
+    # meant to show. There are two, and this instruction has already gone stale
+    # once: the exact-match cache is in Redis, and the paraphrase cache moved
+    # into Qdrant when sparse retrieval did.
     kubectl exec -n atlas deploy/redis -- \
       sh -c 'redis-cli --scan --pattern "qa:*" | xargs -r redis-cli DEL'
+    kubectl exec -n atlas deploy/api -- \
+      python -c 'from app.qa_cache import QACache; QACache().clear()'
 
     python capture_demo.py
 """

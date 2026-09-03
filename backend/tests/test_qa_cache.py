@@ -149,3 +149,21 @@ def test_purge_deletes_by_expiry_filter():
     cond = fake.deletes[0].filter.must[0]
     assert cond.key == "expires_at"
     assert cond.range.lt <= int(time.time())
+
+
+def test_clear_deletes_the_whole_collection():
+    """An empty Filter has to mean *everything*, not nothing.
+
+    A `clear()` that quietly matched no points would be one more feature that
+    looks configured and does nothing -- and the only symptom would be a demo
+    recording the graph trace of a cache hit. Verified against Qdrant 1.12.5
+    as well: seeding three points and calling this leaves zero.
+    """
+    fake = _FakeQdrant()
+    QACache(client=fake, collection="c").clear()
+
+    assert len(fake.deletes) == 1
+    selector = fake.deletes[0]
+    assert selector.filter.must is None
+    assert selector.filter.should is None
+    assert selector.filter.must_not is None
