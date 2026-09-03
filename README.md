@@ -23,7 +23,7 @@ the [ablation](#what-each-stage-actually-buys) is why. Recorded by
 | **Retrieval** | Parent-child chunking, dense + sparse vectors in one Qdrant collection fused server-side by RRF, cross-encoder rerank, LLM document grading |
 | **Generation** | SSE streaming answers; token-budget packing on deduplicated parent passages |
 | **Orchestration** | LangGraph: guard → cache → rewrite → retrieve → rerank → grade → compress → generate → faithfulness |
-| **Quality** | 53-question golden set tagged by failure mode — recall, precision, faithfulness, correctness, hallucination rate, abstention accuracy, plus a stage-by-stage ablation with a control row; runs as a background job with progress, single-flighted so two clicks are one run |
+| **Quality** | 53-question golden set tagged by failure mode — recall, precision, faithfulness, correctness, hallucination rate, abstention accuracy, plus a stage-by-stage ablation with a control row that measures the harness's own noise floor; runs as a background job with progress, single-flighted so two clicks are one run, and reports what it spent |
 | **Safety** | API-key auth with per-principal cache isolation and rate limiting; injection resistance measured across 17 attacks and four defense configurations, not asserted; upload path hardened against traversal, oversized bodies and unreadable types |
 | **Ops** | 521MB image running as a non-root uid; horizontally scalable — no retrieval state in process memory; load-tested to a measured ceiling (592 rps cached, no head-of-line blocking); Prometheus metrics from every process; retrieval p50/p95 separate from end-to-end latency; Redis embedding + semantic QA cache |
 | **Ingest** | Async worker queue (Redis Streams locally, Kafka/Redpanda in production); uploads streamed to disk under a byte budget, parsing off the event loop; catalogue and vector store reconciled at startup and on demand |
@@ -34,22 +34,29 @@ Every claim above has a number behind it, and several of those numbers are
 unflattering. Those are the ones worth reading first.
 
 - **[Hybrid retrieval and the cross-encoder buy nothing on this corpus.](#what-each-stage-actually-buys)**
-  Fusing sparse into dense matches dense on correctness and costs context
-  precision. The cross-encoder moves correctness by zero and adds latency, so
-  it is off in the deployed config. Query rewrite looked worth +3.5pp on 14
-  questions and worth exactly nothing on 53 — the clearest argument here for
-  sizing an eval set before trusting it.
+  Fusing sparse into dense matches dense on correctness to three decimals and
+  costs context precision. The cross-encoder moves correctness by zero, so it is
+  off in the deployed config. Query rewrite looked worth +3.5pp on 14 questions
+  and worth half a question on 53 — the clearest argument here for sizing an
+  eval set before trusting it.
+
+- **[A control row invalidated a whole column.](#what-each-stage-actually-buys)**
+  The ablation now runs one configuration twice under two names. The pair agreed
+  on all 53 questions and on every quality metric to three decimals — and their
+  p95 latencies differ by **2.4x**. That column measures the model provider's
+  variance, not retrieval, and nothing in it should be read as a difference
+  between rows.
 
 - **[A whole subsystem existed to coordinate state that did not need to
   exist.](#the-sparse-index-moved-into-qdrant)** Sparse retrieval was an
   in-process index rebuilt by every replica, kept in step by a revision counter,
   a poller, a rebuild thread and an atomically swapped snapshot. Moving the
   vectors into Qdrant deleted all of it — and retrieved *better* than the
-  library it replaced, sparse-only correctness 0.863 → 0.906.
+  library it replaced, sparse-only correctness 0.863 → 0.896.
 
 - **[The harness could not resolve the differences it was being read
-  for.](#the-sparse-index-moved-into-qdrant)** Two configurations that were the
-  same pipeline reported 0.925 and 0.906. That put a number on the noise floor,
+  for.](#what-each-stage-actually-buys)** Two configurations that were the same
+  pipeline reported 0.925 and 0.906. That put a number on the noise floor,
   1.9pp — one question of 53 — and retracted an earlier finding that was exactly
   1.9pp. Every table now carries a control row so the floor is always visible.
 
@@ -268,91 +275,100 @@ the set had at the time; there are now seven.
 
 `scripts/ablation.py` runs the golden set through progressively richer
 pipelines. Each row adds exactly one stage, so a delta belongs to that stage
-and nothing else.
+and nothing else — and one row adds nothing at all.
 
-**Retrieval, re-measured on the Qdrant sparse index:**
-
-| Configuration | Recall | Ctx precision | Faithful | Correct | Halluc. | p95 ms | Tokens |
-|---|---|---|---|---|---|---|---|
-| **Dense only** | 1.000 ±0.000 | **0.502** ±0.002 | 0.981 ±0.000 | **0.925** ±0.000 | 0.000 ±0.000 | 674 ±485 | 1022 ±9 |
-| **Sparse only** | 1.000 ±0.000 | 0.425 ±0.002 | 0.981 ±0.000 | 0.906 ±0.000 | 0.000 ±0.000 | 617 ±334 | 1036 ±0 |
-| **Hybrid + RRF** | 1.000 ±0.000 | 0.456 ±0.004 | 0.979 ±0.003 | **0.925** ±0.000 | 0.000 ±0.000 | 434 ±54 | 1075 ±12 |
-
-**Downstream stages, from the previous implementation:**
-
-| Configuration | Recall | Ctx precision | Faithful | Correct | Halluc. | p95 ms | Tokens |
-|---|---|---|---|---|---|---|---|
-| **+ cross-encoder** | 1.000 ±0.000 | 0.428 ±0.000 | 0.977 ±0.000 | 0.906 ±0.000 | 0.000 | 660 ±316 | 985 ±8 |
-| **+ LLM grading (full)** | 0.961 ±0.000 | **0.830** ±0.003 | 0.975 ±0.004 | 0.915 ±0.013 | 0.000 | 1024 ±336 | **232** ±5 |
-| **Full − query rewrite** | 0.961 ±0.000 | 0.830 ±0.003 | 0.975 ±0.001 | 0.915 ±0.013 | 0.000 | 1099 ±1159 | 232 ±5 |
-
-These three are carried over rather than re-run: the account the harness bills
-ran out of credits partway through the new run, and a stale number that says so
-beats a fresh number that is not there. The one partial re-run that did land
-before it stopped put the full pipeline at recall 0.961 / correctness 0.943,
-which is the same shape. They are due for re-measurement.
+| Configuration | Recall | Ctx precision | Faithful | Correct | Halluc. | p95 ms | Tokens | Cost |
+|---|---|---|---|---|---|---|---|---|
+| **Dense only** | 1.000 ±0.000 | **0.505** ±0.002 | 0.981 ±0.000 | 0.925 ±0.000 | 0.000 | 462 ±135 | 1010 ±2 | $0.220 |
+| **Control: dense only again** | 1.000 ±0.000 | 0.505 ±0.002 | 0.981 ±0.000 | 0.925 ±0.000 | 0.000 | 1094 ±1060 | 1019 ±6 | $0.223 |
+| **Sparse only** | 1.000 ±0.000 | 0.412 ±0.002 | 0.981 ±0.000 | 0.896 ±0.013 | 0.000 | 805 ±614 | 1047 ±18 | $0.224 |
+| **Hybrid + RRF** | 1.000 ±0.000 | 0.458 ±0.002 | 0.980 ±0.001 | 0.925 ±0.000 | 0.000 | 426 ±62 | 1067 ±1 | $0.228 |
+| **+ LLM grading (full)** | 0.961 ±0.000 | **0.850** ±0.000 | 0.975 ±0.003 | **0.934** ±0.013 | 0.000 | 377 ±29 | **288** ±0 | **$0.115** |
+| **Full − query rewrite** | 0.961 ±0.000 | 0.850 ±0.000 | 0.976 ±0.001 | 0.925 ±0.000 | 0.000 | 1189 ±1191 | 277 ±0 | $0.107 |
 
 53 questions, 2 runs per configuration, mean ±sd. Judge `gpt-4o-mini`,
-generation `gpt-4o`. Reproduce with `python scripts/ablation.py --repeats 2`.
-Note the ±sd is spread across repeats of one configuration and understates the
-harness's resolution: two *identical* configurations differed by 1.9pp, which
-is [where that number comes from](#the-sparse-index-moved-into-qdrant) and why
-the tables now carry a control row.
+generation `gpt-4o`. Whole run: **$1.12**, 45 minutes, `gpt-4o` 88% of the
+spend. Reproduce with `python scripts/ablation.py --repeats 2`. The
+cross-encoder row is missing because the model is not installed in the slim
+image and the harness [skips it rather than reporting a pass-through as a
+measurement](#the-sparse-index-moved-into-qdrant).
+
+**Read the control row first.** It is `Dense only` run a second time under a
+different name — the same configuration, so every difference between those two
+rows is noise and nothing else. Case by case, they agreed on **53 of 53
+questions**. Their correctness, precision, faithfulness and cost are identical
+to three decimals.
+
+**Their p95 latency differs by 2.4x** — 462ms against 1094ms, ±1060.
+
+That is the control row paying for itself. The p95 column cannot distinguish
+configurations at this sample size: it is dominated by variance in the model
+provider's response time, not by retrieval. `Full − query rewrite` at 1189ms
+against the full pipeline's 377ms is the same artifact, not a finding. Retrieval
+latency is measured properly under [Throughput](#throughput), against a warm
+cache and with the model out of the path. **Nothing in this column should be
+read as a difference between rows.**
 
 Aggregates hide where the differences live, so the same runs by question type
-(answer correctness, one run). The sparse column is the previous
-implementation; the categories, not the column, are the point:
+(answer correctness, both runs averaged):
 
 | Category | n | Dense | Sparse | Full | What it stresses |
 |---|---|---|---|---|---|
-| `semantic` | 4 | **1.000** | **0.500** | 1.000 | paraphrased away from corpus wording |
-| `abstain` | 6 | 0.333 | 0.167 | **0.667** | document retrievable, fact absent from it |
-| `policy` | 9 | 1.000 | 1.000 | **0.778** | the answer is a rule, not a figure |
+| `lookup` | 10 | **1.000** | 0.950 | 1.000 | single stated figure |
+| `policy` | 9 | 1.000 | 1.000 | **0.889** | the answer is a rule, not a figure |
 | `distractor` | 8 | 1.000 | 1.000 | **0.875** | the same figure appears in another document |
-| `deferral` | 2 | 1.000 | 0.750 | 1.000 | corpus says where the answer lives, not what it is |
-| `lexical` | 5 | 1.000 | 1.000 | 1.000 | exact identifiers (`KV-2025-441`, `IR-4`) |
+| `abstain` | 6 | 0.333 | 0.333 | **0.750** | document retrievable, fact absent from it |
 | `multi-hop` | 5 | 1.000 | 1.000 | 1.000 | answer spans two documents |
-| `lookup` | 10 | 1.000 | 1.000 | 1.000 | single stated figure |
+| `lexical` | 5 | 1.000 | 1.000 | 1.000 | exact identifiers (`KV-2025-441`, `IR-4`) |
+| `semantic` | 4 | **1.000** | **0.750** | 1.000 | paraphrased away from corpus wording |
 | `injection` | 3 | 1.000 | 1.000 | 1.000 | user and corpus prompt injection |
+| `deferral` | 2 | 1.000 | 1.000 | 1.000 | corpus says where the answer lives, not what it is |
+| `withheld` | 1 | 1.000 | 1.000 | 1.000 | corpus names a figure as unpublished |
 
 **What the measurements support:**
 
+- **Grading is the stage that pays, and it pays twice.** Context precision
+  0.458 → 0.850, prompt tokens 1067 → 288 (−73%), abstention correctness more
+  than doubled (0.333 → 0.750). It also **halves the bill**: $0.228 → $0.115
+  per two runs, because a smaller context is a smaller prompt on the expensive
+  model. The token-reduction claim shows up on the invoice, not just in a
+  counter.
 - **Dense retrieval earns its place, on the strength of one category.** It ties
-  sparse everywhere except `semantic`, where questions are deliberately worded
-  away from the corpus vocabulary and sparse scores 0.500 against dense 1.000.
-- **Fusing sparse into dense buys precision, not correctness.** Hybrid matches
-  dense on correctness (0.925 both) and gives up context precision to do it
-  (0.502 → 0.456): the lexical hits displace passages the dense ranker had
-  already ordered correctly. An earlier version of this section said hybrid was
-  *worse* on correctness, 0.925 → 0.906. That gap is 1.9pp, which is one
-  question of 53 and exactly the harness's
-  [measured resolution floor](#the-sparse-index-moved-into-qdrant). It was
-  over-read, and it is retracted.
-- **The cross-encoder does nothing here.** Identical correctness to plain
-  hybrid, marginally worse precision, and it adds latency. On this corpus it is
-  pure cost, so it is off by default and its dependency is an optional extra:
-  `sentence-transformers` was dragging torch, triton and 2.7GB of CUDA wheels
-  into a CPU-only image for it. Removing that from the default build took the
-  image from **8.69GB to 521MB**, and the layer the cluster stores from 2.99GB
-  to 117MB, and CI's backend job from 2m19s to 44s. Install `.[rerank]` to turn it back on, ideally against the CPU
-  torch index.
-- **Grading is the stage that pays.** Context precision 0.43 → 0.83, prompt
-  tokens 990 → 232 (−77%), and abstention correctness doubles (0.333 → 0.667).
-- **Grading also over-abstains.** It is the only reason `policy` falls to 0.778
-  and `distractor` to 0.875: on `pii-to-llm` and `personal-claude-account` the
-  corpus states the rule plainly, dense-only answers correctly, and the full
-  pipeline refuses. That is a real regression, and it is why the corrective
-  loop is a trade rather than a free win.
-- **Query rewrite has no measurable effect.** Full and full−rewrite agree on
-  every metric to three decimals. An earlier 14-question run credited rewrite
-  with +3.5pp correctness; that was noise, and it is the clearest argument in
-  this repo for sizing an eval set before trusting it.
+  sparse everywhere except `semantic` — questions deliberately worded away from
+  the corpus vocabulary, where sparse scores 0.750 against dense 1.000 — and
+  `lookup`, 0.950 against 1.000.
+- **Fusing sparse into dense buys nothing and costs precision.** Hybrid matches
+  dense on correctness to three decimals (0.925 both) and gives up context
+  precision to do it (0.505 → 0.458): the lexical hits displace passages the
+  dense ranker had already ordered correctly.
+- **Grading no longer costs correctness.** It used to look like a trade — the
+  previous implementation put the full pipeline at 0.915 against dense-only
+  0.925. It is now 0.934 against 0.925, and that 0.9pp is well inside the noise
+  floor, so the honest reading is that the two are level. What survives is the
+  *shape* of the trade below.
+- **Grading still over-abstains.** It is the only reason `policy` falls to
+  0.889 and `distractor` to 0.875: on `pii-to-llm` and `personal-claude-account`
+  the corpus states the rule plainly, dense-only answers correctly, and the full
+  pipeline refuses. That is a real regression and it is why the corrective loop
+  is a trade rather than a free win.
+- **Query rewrite has no measurable effect.** Full and full−rewrite differ by
+  0.9pp, which is half of one question. An earlier 14-question run credited
+  rewrite with +3.5pp; that was noise, and it is the clearest argument in this
+  repo for sizing an eval set before trusting it.
+
+**The noise floor, measured three ways.** Two identical configurations agreed
+on all 53 questions. But `Sparse only` disagreed with *itself* across its two
+repeats — `leave-approval-four-days`, 1.00 → 0.00 — and so did the full
+pipeline, `karm-payload`, 0.00 → 1.00. One question is **1.9pp**, and that is
+the smallest difference anything in this table is allowed to mean. Every
+disagreement observed, in this run and the previous one, has been exactly one
+question. Two rows that differ by less than that are the same row.
 
 **What the measurements do not support:** the `lexical` category was built to
-show lexical search winning on exact identifiers and it did not — dense retrieves
-`KV-2025-441` and `IR-4` perfectly well at this corpus size. Recall is also
-saturated at 1.000 for every retriever, because `_hit` only requires one of the
-expected documents and there are only eight to choose from. Recall cannot
+show lexical search winning on exact identifiers and it did not — dense
+retrieves `KV-2025-441` and `IR-4` perfectly well at this corpus size. Recall is
+also saturated at 1.000 for every retriever, because `_hit` only requires one of
+the expected documents and there are only eight to choose from. Recall cannot
 discriminate anything here regardless of how the questions are written; that is
 a property of the metric and the corpus size, not of the question set.
 
@@ -650,34 +666,35 @@ same golden set, same generation and judge models:
 
 | Retriever | Ctx precision | Correctness |
 | --- | --- | --- |
-| Dense only | 0.508 → 0.502 | 0.925 → 0.925 |
-| Sparse only | 0.403 → **0.425** | 0.863 → **0.906** |
-| Hybrid + RRF | 0.434 → **0.456** | 0.906 → **0.925** |
+| Dense only | 0.508 → 0.505 | 0.925 → 0.925 |
+| Sparse only | 0.403 → **0.412** | 0.863 → **0.896** |
+| Hybrid + RRF | 0.434 → **0.458** | 0.906 → **0.925** |
 
 Dense is unchanged, which is the control: nothing about the dense path moved.
-Sparse-only correctness gains 4.3pp — about two and a half questions of 53 —
-and context precision gains for both sparse and hybrid, with a run-to-run sd of
-±0.004. One likely reason, not measured: the old implementation dropped hits
-scoring zero, so it often returned fewer than `retrieve_k` candidates, while
-the Qdrant query returns a full ranking.
+Sparse-only correctness gains **3.3pp** — under two questions of 53, so only
+just above [what this harness can resolve](#what-each-stage-actually-buys) —
+and context precision gains for both sparse and hybrid, where the run-to-run sd
+of ±0.002 makes the difference solid. One likely reason for the correctness
+gain, not measured: the old implementation dropped hits scoring zero, so it
+often returned fewer than `retrieve_k` candidates, while the Qdrant query
+returns a full ranking.
 
 **The hybrid result also retracts an earlier claim.** This README used to say
 hybrid retrieval was worse than dense — "fusing BM25 into dense *lowers*
 correctness (0.925 → 0.906)". That gap is 1.9pp, which is one question of 53,
-and the run that produced these numbers also showed that 1.9pp is the smallest
-difference the harness can resolve. So the old claim was over-read. What the
-measurements support now is narrower and duller: **hybrid and dense are equal
-on correctness, and hybrid has lower context precision.** Dense alone is still
-what the deployment would choose on the evidence; hybrid no longer costs
-anything to keep.
+and the same runs showed 1.9pp is the smallest difference the harness can
+resolve. So the old claim was over-read. What the measurements support now is
+narrower and duller: **hybrid and dense are equal on correctness, and hybrid has
+lower context precision.** Dense alone is still what the deployment would choose
+on the evidence; hybrid no longer costs anything to keep.
 
-**How the resolution floor got measured — by accident.** The run reported
+**How the resolution floor got measured — by accident.** A run reported
 `Hybrid + RRF` at 0.925 and `+ cross-encoder` at 0.906. Those are the same
 pipeline: the slim image has no `sentence-transformers`, so the rerank stage
 degrades to a pass-through that is byte-identical to having it switched off
 (`test_rerank_degradation.py` pins exactly that). Two identical configurations
 disagreed on one question, `seattle-sick-day-count`, and agreed on the other
-52. Within a configuration, repeats agreed on all 53.
+52.
 
 Three things changed because of it:
 
@@ -840,6 +857,19 @@ total $0.0034   per case $0.00113
 Three full-pipeline questions. **$0.0011 per case**, so a 53-question run is
 about **$0.06** — an order of magnitude below the estimate that replaced the
 first estimate.
+
+The full ablation then billed **$1.12** for twelve 53-question runs, and the
+per-configuration figures say something the token counter alone did not:
+
+| | Tokens/question | Cost per 2 runs |
+| --- | --- | --- |
+| Retrieval only (no grading) | ~1050 | ~$0.22 |
+| Full pipeline (grading on) | 288 | **$0.11** |
+
+**LLM grading halves the bill.** It is the same finding as "−73% prompt tokens",
+arriving through the invoice instead of a counter — and the two do not match
+exactly, because grading spends its own `gpt-4o-mini` calls to save `gpt-4o`
+ones. `gpt-4o` was 88% of the run's spend on 24% of its calls.
 
 **Tokens are the measurement; dollars are arithmetic.** The rate table is
 configuration (`MODEL_PRICES`), not fact, because a price compiled into source
