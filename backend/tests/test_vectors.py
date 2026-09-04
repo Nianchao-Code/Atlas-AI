@@ -168,3 +168,69 @@ def test_a_null_score_is_zero_rather_than_a_crash():
 def test_the_source_label_is_whatever_the_caller_says(source):
     # The ablation reads this to tell which retriever produced a hit.
     assert _to_hit(_Point({"chunk_id": "c"}), source).source == source
+
+
+class _FlakyClient:
+    """Fails the first N calls with a given exception, then succeeds."""
+
+    def __init__(self, failures: int, exc: Exception) -> None:
+        self.remaining = failures
+        self.exc = exc
+        self.calls = 0
+
+    def query_points(self, **kwargs):
+        self.calls += 1
+        if self.remaining > 0:
+            self.remaining -= 1
+            raise self.exc
+
+        class _Res:
+            points = [_Point({"chunk_id": "c1", "text": "t"})]
+
+        return _Res()
+
+
+def _searchable(client) -> VectorStore:
+    store = VectorStore.__new__(VectorStore)
+    store.client = client  # type: ignore[assignment]
+    store.collection = "atlas_chunks"
+    return store
+
+
+def test_a_stale_connection_is_retried_once():
+    # This ended a 45-minute measurement mid-run. On the serving path it is a
+    # failed query for a user who did nothing wrong.
+    client = _FlakyClient(1, Exception("Server disconnected without sending a response."))
+    hits = _searchable(client).search([0.1], k=4)
+
+    assert client.calls == 2
+    assert [h.chunk_id for h in hits] == ["c1"]
+
+
+def test_a_query_the_server_rejected_is_not_retried():
+    # Retrying something the server evaluated and refused turns a bug into
+    # latency, and it will fail the second time for the same reason.
+    client = _FlakyClient(5, ValueError("Wrong input: Not existing vector name"))
+    with pytest.raises(ValueError):
+        _searchable(client).search([0.1], k=4)
+
+    assert client.calls == 1
+
+
+def test_a_connection_that_stays_broken_still_fails():
+    client = _FlakyClient(5, Exception("Connection reset by peer"))
+    with pytest.raises(Exception, match="Connection reset"):
+        _searchable(client).search([0.1], k=4)
+
+    # One retry, not a loop: a dead backend should surface, not be waited on.
+    assert client.calls == 2
+
+
+def test_the_retry_covers_sparse_and_hybrid_too():
+    for call, args in (
+        ("search_sparse", ("annual leave", 4)),
+        ("search_hybrid", ([0.1], "annual leave", 4)),
+    ):
+        client = _FlakyClient(1, Exception("Server disconnected without sending a response."))
+        getattr(_searchable(client), call)(*args)
+        assert client.calls == 2, f"{call} did not retry"

@@ -12,6 +12,30 @@ from app.sparse import SPARSE_VECTOR_NAME, sparse_vector
 
 log = structlog.get_logger()
 
+# A pooled HTTP connection that the server closed while it sat idle fails on
+# the next request with "Server disconnected without sending a response" -- not
+# an error the server ever saw, and not one a retry can make worse. It ended a
+# 45-minute measurement mid-run; on the serving path it would be a failed
+# query for a user who did nothing wrong.
+_TRANSIENT = ("disconnected", "connection reset", "connection aborted", "broken pipe")
+
+
+def _retry_once(what: str, call):
+    """Run a Qdrant call, retrying once if the connection was stale.
+
+    Deliberately one retry and only for connection-level failures: a query that
+    the server rejected on its merits will fail again, and hiding that behind
+    retries turns a bug into latency.
+    """
+    try:
+        return call()
+    except Exception as exc:
+        text = str(exc).lower()
+        if not any(marker in text for marker in _TRANSIENT):
+            raise
+        log.warning("qdrant.retry_stale_connection", op=what, error=str(exc)[:120])
+        return call()
+
 
 @dataclass
 class Hit:
@@ -99,26 +123,31 @@ class VectorStore:
         self.client.upsert(collection_name=self.collection, points=points)
 
     def search(self, vector: list[float], k: int) -> list[Hit]:
-        res = self.client.query_points(
-            collection_name=self.collection,
-            query=vector,
-            limit=k,
-            with_payload=True,
-        )
-        return [_to_hit(p, "dense") for p in res.points]
+        def call():
+            return self.client.query_points(
+                collection_name=self.collection,
+                query=vector,
+                limit=k,
+                with_payload=True,
+            )
+
+        return [_to_hit(p, "dense") for p in _retry_once("dense", call).points]
 
     def search_sparse(self, query: str, k: int) -> list[Hit]:
         vec = sparse_vector(query)
         if not vec.indices:
             return []
-        res = self.client.query_points(
-            collection_name=self.collection,
-            query=vec,
-            using=SPARSE_VECTOR_NAME,
-            limit=k,
-            with_payload=True,
-        )
-        return [_to_hit(p, "sparse") for p in res.points]
+
+        def call():
+            return self.client.query_points(
+                collection_name=self.collection,
+                query=vec,
+                using=SPARSE_VECTOR_NAME,
+                limit=k,
+                with_payload=True,
+            )
+
+        return [_to_hit(p, "sparse") for p in _retry_once("sparse", call).points]
 
     def search_hybrid(self, vector: list[float], query: str, k: int) -> list[Hit]:
         """Dense and sparse retrieved and fused in one round trip.
@@ -131,14 +160,17 @@ class VectorStore:
         vec = sparse_vector(query)
         if vec.indices:
             prefetch.append(models.Prefetch(query=vec, using=SPARSE_VECTOR_NAME, limit=k))
-        res = self.client.query_points(
-            collection_name=self.collection,
-            prefetch=prefetch,
-            query=models.FusionQuery(fusion=models.Fusion.RRF),
-            limit=k,
-            with_payload=True,
-        )
-        return [_to_hit(p, "rrf") for p in res.points]
+
+        def call():
+            return self.client.query_points(
+                collection_name=self.collection,
+                prefetch=prefetch,
+                query=models.FusionQuery(fusion=models.Fusion.RRF),
+                limit=k,
+                with_payload=True,
+            )
+
+        return [_to_hit(p, "rrf") for p in _retry_once("hybrid", call).points]
 
     def delete_doc(self, doc_id: str) -> None:
         self.client.delete(
