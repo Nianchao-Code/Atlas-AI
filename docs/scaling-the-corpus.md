@@ -138,11 +138,15 @@ bought nothing. The reversal survived all three generators (dense at 15, 30 and
 28 of 53), which is what separates it from the artefacts the first two
 produced.
 
-**What has not been re-measured**: the full ablation, the eval gate, and
-throughput, all of which need generation rather than retrieval alone. Until
-those run, [the ablation's numbers](retrieval-ablation.md) describe an
-eight-document corpus and say so. The retrieval numbers above are not a
-substitute for them.
+**The full ablation has since run at this corpus size**, and it confirmed the
+retrieval numbers end to end rather than softening them: dense-only correctness
+0.925 → 0.580, and the hybrid fusion that "bought nothing" at eight documents
+reaching recall 0.961. [The comparison is there](retrieval-ablation.md), both
+tables side by side.
+
+**Still not re-measured**: the eval gate and throughput. Both need the running
+service rather than retrieval alone, and neither has been run against 40,079
+chunks.
 
 ## Reproducing it
 

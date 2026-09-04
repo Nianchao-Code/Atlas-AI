@@ -21,7 +21,7 @@ difference nobody checks before committing the frames.
 
 | Area | Implementation |
 | --- | --- |
-| **Retrieval** | Parent-child chunking; dense + sparse vectors in one Qdrant collection, fused server-side by RRF; LLM document grading |
+| **Retrieval** | Parent-child chunking; dense + sparse vectors in one Qdrant collection, fused server-side by RRF — recall 0.961 against dense-only 0.618 at 10k documents; LLM document grading |
 | **Generation** | SSE streaming; token-budget packing over deduplicated parent passages; faithfulness gate that abstains |
 | **Orchestration** | LangGraph — guard → cache → rewrite → retrieve → rerank → grade → compress → generate → faithfulness |
 | **Quality** | 53-question golden set tagged by failure mode, plus an ablation with a control row that measures its own noise floor |
@@ -35,22 +35,26 @@ Every claim here has a number behind it, and several of those numbers are
 unflattering. Those are the ones worth reading first — each links to the run
 that produced it.
 
-- **[A conclusion that held at 8 documents and reversed at 10,000.](docs/scaling-the-corpus.md)**
-  The ablation found dense retrieval earned its place and fusing sparse into it
-  bought nothing. At ten thousand documents dense finds no relevant document at
-  all for 22 of 53 questions, and sparse finds one for every question. Both
-  measurements are real; the first one's scope was the thing left unstated.
+- **[Three conclusions that held at 8 documents and were false at 10,000.](docs/retrieval-ablation.md)**
+  Dense-only correctness fell 0.925 → **0.580** and recall 1.000 → **0.618**;
+  the hybrid fusion the old page called worthless reaches **0.961** recall, 34
+  points above dense. Same code, same 53 questions, same harness — the only
+  thing that changed was a corpus large enough for the metric to separate
+  anything. The eight-document numbers were not wrong, they were unfalsifiable.
 
-- **[Hybrid retrieval and the cross-encoder buy nothing on this corpus.](docs/retrieval-ablation.md)**
-  Fusing sparse into dense matches dense on correctness to three decimals and
-  costs context precision. Query rewrite looked worth +3.5pp on 14 questions and
-  half a question on 53.
+- **[Query rewrite buys nothing and costs stability.](docs/retrieval-ablation.md)**
+  It looked worth +3.5pp on 14 questions, half a question on 53, and nothing at
+  10,000 — while being the reason dense retrieval's repeats disagree at all. An
+  LLM call that rephrases the query changes the embedding, which changes what is
+  retrieved. At eight documents that variance was invisible, because every
+  rephrasing retrieved everything.
 
-- **[A control row invalidated a whole column.](docs/retrieval-ablation.md)**
-  The ablation runs one configuration twice under two names. The pair agreed on
-  all 53 questions and every quality metric to three decimals — and their p95
-  latencies differ by **2.4x**. That column measures the provider's variance,
-  not retrieval.
+- **[A control row invalidated a column, then a noise floor.](docs/retrieval-ablation.md)**
+  The ablation runs one configuration twice under two names. At eight documents
+  the pair agreed on all 53 questions while their p95 latencies differed by
+  **2.4x**, which retired that column. At ten thousand the same pair disagrees
+  on **4 of 53 answers** — so the floor grew with the corpus, and a 5pp gap that
+  was a finding on the old page is noise on the new one.
 
 - **[An upload could write to the application's own source.](docs/ingest-path.md)**
   `filename` came from the client and was joined onto the upload directory

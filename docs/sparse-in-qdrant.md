@@ -36,6 +36,12 @@ on, and chunk length varies with a **coefficient of variation of 0.333**, so
 `b` is the real loss. Whether that costs anything is a retrieval question, and
 the ablation answers it.
 
+> The comparison below was measured on eight documents. At
+> [ten thousand](retrieval-ablation.md) the same configurations separate far
+> more sharply — sparse 0.849 against dense 0.580 — so read this table as
+> evidence that the Qdrant implementation is at least as good as the library it
+> replaced, not as a measurement of what sparse retrieval is worth.
+
 **The replacement retrieves better than the library it replaced.** Same corpus,
 same golden set, same generation and judge models:
 
