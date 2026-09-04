@@ -35,6 +35,12 @@ Every claim here has a number behind it, and several of those numbers are
 unflattering. Those are the ones worth reading first — each links to the run
 that produced it.
 
+- **[A conclusion that held at 8 documents and reversed at 10,000.](docs/scaling-the-corpus.md)**
+  The ablation found dense retrieval earned its place and fusing sparse into it
+  bought nothing. At ten thousand documents dense finds no relevant document at
+  all for 22 of 53 questions, and sparse finds one for every question. Both
+  measurements are real; the first one's scope was the thing left unstated.
+
 - **[Hybrid retrieval and the cross-encoder buy nothing on this corpus.](docs/retrieval-ablation.md)**
   Fusing sparse into dense matches dense on correctness to three decimals and
   costs context precision. Query rewrite looked worth +3.5pp on 14 questions and

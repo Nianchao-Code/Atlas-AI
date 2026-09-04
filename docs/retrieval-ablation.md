@@ -4,6 +4,17 @@
 pipelines. Each row adds exactly one stage, so a delta belongs to that stage
 and nothing else — and one row adds nothing at all.
 
+> **Every number on this page was measured against eight documents.** The
+> corpus is now [10,008](scaling-the-corpus.md), and retrieval measured there
+> contradicts the conclusion below about dense retrieval: at eight documents
+> dense earns its place and fusing sparse into it buys nothing, while at ten
+> thousand dense finds no relevant document at all for 22 of 53 questions and
+> sparse finds one for every question. The ablation has not been re-run at the
+> larger corpus — it needs generation rather than retrieval alone — so this page
+> stands as the eight-document result and should be read as one.
+
+
+
 | Configuration | Recall | Ctx precision | Faithful | Correct | Halluc. | p95 ms | Tokens | Cost |
 |---|---|---|---|---|---|---|---|---|
 | **Dense only** | 1.000 ±0.000 | **0.505** ±0.002 | 0.981 ±0.000 | 0.925 ±0.000 | 0.000 | 462 ±135 | 1010 ±2 | $0.220 |
