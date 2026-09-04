@@ -222,8 +222,27 @@ async def health():
 
 
 @app.get("/api/v1/documents")
-async def list_docs(s: StateDep, principal: PrincipalDep):
-    return await s.catalog.list()
+async def list_docs(
+    s: StateDep,
+    principal: PrincipalDep,
+    limit: int = 200,
+    offset: int = 0,
+):
+    """A page of the catalogue, plus the true total.
+
+    It used to return everything. At eight documents that was a nicety; at ten
+    thousand it is a 10MB response the browser renders as an unusable list, and
+    the count the UI actually wants is one number.
+    """
+    documents, chunks = await s.catalog.counts()
+    limit = max(1, min(limit, 1000))
+    return {
+        "documents": await s.catalog.list(limit=limit, offset=max(0, offset)),
+        "total": documents,
+        "chunks": chunks,
+        "limit": limit,
+        "offset": max(0, offset),
+    }
 
 
 @app.post("/api/v1/documents")

@@ -30,6 +30,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<QueryResponse | null>(null);
   const [docs, setDocs] = useState<DocumentRecord[]>([]);
+  const [docTotal, setDocTotal] = useState(0);
   const [sli, setSli] = useState<MetricsSnapshot | null>(null);
   const [report, setReport] = useState<EvalReport | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
@@ -38,7 +39,8 @@ export default function App() {
   async function refresh() {
     try {
       const [d, m, h] = await Promise.all([listDocs(), metrics(), health()]);
-      setDocs(d);
+      setDocs(d.documents);
+      setDocTotal(d.total);
       setSli(m);
       setLlm(h.llm);
     } catch (e) {
@@ -103,7 +105,11 @@ export default function App() {
         await new Promise((r) => setTimeout(r, 700));
         await refresh();
         const latest = await listDocs();
-        if (latest.length && latest.every((d) => d.status === "ready" || d.status === "failed")) break;
+        if (
+          latest.documents.length &&
+          latest.documents.every((d) => d.status === "ready" || d.status === "failed")
+        )
+          break;
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -142,7 +148,8 @@ export default function App() {
         <div className="status">
           <span className={llm ? "pill ok" : "pill"}>{llm ? "Model connected" : "No API key · retrieval only"}</span>
           <span className="pill">
-            {ready}/{docs.length || 0} docs indexed
+            {ready}/{docTotal || docs.length} docs indexed
+            {docTotal > docs.length ? ` (showing ${docs.length})` : ""}
           </span>
         </div>
       </header>

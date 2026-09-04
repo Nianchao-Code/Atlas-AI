@@ -23,31 +23,120 @@ class IndexJobEnvelope:
     msg_id: str | None = None  # Redis stream id; None for Kafka
 
 
+SEP = chr(31)  # unit separator: no filename this service accepts can hold it
+DOCS_KEY = "docs"
+CHUNKS_KEY = "docs:chunks"
+ORDER_KEY = "docs:by_name"
+
+# Three keys kept in step by Lua, so a writer cannot leave two of them
+# disagreeing. HSET followed by INCRBY from the client is two round trips with
+# a window between them, and that window is where a counter goes wrong.
+#
+# The separator is interpolated from SEP rather than written twice. Two places
+# that must agree, with nothing forcing them to, is the shape of most of the
+# bugs this project has found.
+_UPSERT = f"""
+local old = redis.call('HGET', KEYS[1], ARGV[1])
+local delta = tonumber(ARGV[3])
+if old then
+  local prev = cjson.decode(old)
+  delta = delta - tonumber(prev['chunks'])
+  redis.call('ZREM', KEYS[3], prev['filename'] .. string.char({ord(SEP)}) .. ARGV[1])
+end
+redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+redis.call('INCRBY', KEYS[2], delta)
+redis.call('ZADD', KEYS[3], 0, ARGV[4] .. string.char({ord(SEP)}) .. ARGV[1])
+return delta
+"""
+
+_DELETE = f"""
+local old = redis.call('HGET', KEYS[1], ARGV[1])
+if not old then return 0 end
+local prev = cjson.decode(old)
+redis.call('INCRBY', KEYS[2], -tonumber(prev['chunks']))
+redis.call('ZREM', KEYS[3], prev['filename'] .. string.char({ord(SEP)}) .. ARGV[1])
+redis.call('HDEL', KEYS[1], ARGV[1])
+return 1
+"""
+
+
 class Catalog:
+    """Document records, plus the two indexes that keep reads O(1).
+
+    `counts()` used to load every record and sum it, and the background
+    refresher calls it every two seconds on every replica. At eight documents
+    that was 0.5ms. At ten thousand it measured 56ms -- 2.8% of a core, per
+    replica, forever, to recompute a number that only changes on a write.
+
+    So the chunk total is maintained on write, and ordering lives in a sorted
+    set so a page costs O(log n + page) instead of loading the corpus. Both are
+    derived data and both can drift; `rebuild_indexes()` recomputes them from
+    the records, which are the only thing here that is authoritative.
+    """
+
     def __init__(self, client: redis.Redis) -> None:
         self.r = client
-
-    def _key(self, doc_id: str) -> str:
-        return f"doc:{doc_id}"
+        self._upsert = client.register_script(_UPSERT)
+        self._delete = client.register_script(_DELETE)
 
     async def upsert(self, rec: DocumentRecord) -> None:
-        await self.r.hset("docs", rec.id, rec.model_dump_json())
+        await self._upsert(
+            keys=[DOCS_KEY, CHUNKS_KEY, ORDER_KEY],
+            args=[rec.id, rec.model_dump_json(), rec.chunks, rec.filename],
+        )
 
     async def get(self, doc_id: str) -> DocumentRecord | None:
-        raw = await self.r.hget("docs", doc_id)
+        raw = await self.r.hget(DOCS_KEY, doc_id)
         return DocumentRecord.model_validate_json(raw) if raw else None
 
-    async def list(self) -> list[DocumentRecord]:
-        raw = await self.r.hgetall("docs")
-        docs = [DocumentRecord.model_validate_json(v) for v in raw.values()]
-        return sorted(docs, key=lambda d: d.filename)
+    async def list(self, limit: int | None = None, offset: int = 0) -> list[DocumentRecord]:
+        """A page of records, filename-ordered.
+
+        Unbounded by default because reconciliation and the eval harness both
+        want the whole catalogue; the HTTP endpoint passes a limit, because
+        returning ten thousand records to a browser is a 10MB response nobody
+        reads.
+        """
+        if limit is None and offset == 0:
+            raw = await self.r.hgetall(DOCS_KEY)
+            docs = [DocumentRecord.model_validate_json(v) for v in raw.values()]
+            return sorted(docs, key=lambda d: d.filename)
+        stop = offset + limit - 1 if limit is not None else -1
+        members = await self.r.zrange(ORDER_KEY, offset, stop)
+        ids = [_text(m).rsplit(SEP, 1)[-1] for m in members]
+        if not ids:
+            return []
+        rows = await self.r.hmget(DOCS_KEY, ids)
+        return [DocumentRecord.model_validate_json(v) for v in rows if v]
 
     async def delete(self, doc_id: str) -> None:
-        await self.r.hdel("docs", doc_id)
+        await self._delete(keys=[DOCS_KEY, CHUNKS_KEY, ORDER_KEY], args=[doc_id])
 
     async def counts(self) -> tuple[int, int]:
-        docs = await self.list()
-        return len(docs), sum(d.chunks for d in docs)
+        documents = int(await self.r.hlen(DOCS_KEY))
+        chunks = await self.r.get(CHUNKS_KEY)
+        if chunks is None:
+            # A corpus written before the counter existed, or one whose counter
+            # was lost. Pay the scan once rather than every two seconds.
+            return documents, await self.rebuild_indexes()
+        return documents, int(chunks)
+
+    async def rebuild_indexes(self) -> int:
+        """Recompute the derived keys from the records. Returns the chunk total."""
+        raw = await self.r.hgetall(DOCS_KEY)
+        docs = [DocumentRecord.model_validate_json(v) for v in raw.values()]
+        total = sum(d.chunks for d in docs)
+        pipe = self.r.pipeline()
+        pipe.set(CHUNKS_KEY, total)
+        pipe.delete(ORDER_KEY)
+        if docs:
+            pipe.zadd(ORDER_KEY, {f"{d.filename}{SEP}{d.id}": 0 for d in docs})
+        await pipe.execute()
+        return total
+
+
+def _text(value) -> str:
+    return value if isinstance(value, str) else value.decode("utf-8")
 
 
 class IndexQueue:

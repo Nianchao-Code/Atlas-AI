@@ -17,12 +17,19 @@ from app.reconcile import reconcile, source_path
 class _FakeCatalog:
     def __init__(self, records: list[DocumentRecord]) -> None:
         self.records = {r.id: r for r in records}
+        self.rebuilt = 0
 
     async def list(self) -> list[DocumentRecord]:
         return list(self.records.values())
 
     async def upsert(self, rec: DocumentRecord) -> None:
         self.records[rec.id] = rec
+
+    async def rebuild_indexes(self) -> int:
+        # Reconciliation re-derives the chunk counter and the name index on
+        # every pass, which is what bounds their drift to one sweep.
+        self.rebuilt += 1
+        return sum(r.chunks for r in self.records.values())
 
 
 class _FakeVectors:
@@ -164,3 +171,19 @@ def test_upload_source_is_found_under_its_sanitised_name(corpus):
     # The record stores the name the user typed; the file is on disk under the
     # sanitised one. Reconciliation has to bridge that.
     assert source_path(rec) == dest
+
+
+async def test_a_pass_re_derives_the_catalogue_indexes(corpus):
+    # The chunk counter and the name index are maintained on write, so they can
+    # drift if a writer dies between the record and the counter. This pass
+    # already walks every record, so correcting them here is what bounds the
+    # drift to a single sweep.
+    catalog = _FakeCatalog([_rec("a"), _rec("b")])
+    await reconcile(catalog, _FakeVectors({"a", "b"}), _FakeQueue())
+    assert catalog.rebuilt == 1
+
+
+async def test_a_dry_run_does_not_rewrite_the_indexes(corpus):
+    catalog = _FakeCatalog([_rec("a")])
+    await reconcile(catalog, _FakeVectors({"a"}), _FakeQueue(), dry_run=True)
+    assert catalog.rebuilt == 0

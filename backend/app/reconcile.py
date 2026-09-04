@@ -143,6 +143,13 @@ async def reconcile(
             if ids:
                 RECONCILE_ACTIONS.labels(action=action).inc(len(ids))
 
+    if not dry_run:
+        # The chunk total and the name index are maintained on write, so they
+        # can drift if a writer dies between the record and the counter. This
+        # is the pass that already walks every record, so correcting them here
+        # costs nothing extra and means drift is bounded by one sweep.
+        await catalog.rebuild_indexes()
+
     if report.clean:
         log.info("reconcile.clean", checked=report.checked)
     else:

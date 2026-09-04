@@ -137,8 +137,23 @@ export async function ask(question: string): Promise<QueryResponse> {
   return res.json();
 }
 
-export async function listDocs(): Promise<DocumentRecord[]> {
-  const res = await fetch("/api/v1/documents");
+export type DocumentPage = {
+  documents: DocumentRecord[];
+  total: number;
+  chunks: number;
+  limit: number;
+  offset: number;
+};
+
+/**
+ * A page of the catalogue, plus the true total.
+ *
+ * The endpoint used to return every record. That was fine at eight documents
+ * and a 10MB response at ten thousand, so the count the header shows now comes
+ * from `total` rather than from the length of the list.
+ */
+export async function listDocs(limit = 200, offset = 0): Promise<DocumentPage> {
+  const res = await fetch(`/api/v1/documents?limit=${limit}&offset=${offset}`);
   await ensureOk(res);
   return res.json();
 }
