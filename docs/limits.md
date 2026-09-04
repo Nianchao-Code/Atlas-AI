@@ -16,6 +16,15 @@ replicas; the JSON one stays because a demo should show numbers without asking
 you to stand up a scraper first. It is the last piece of per-process state in
 the service, and unlike the sparse index it never affected an answer.
 
+**Abstention accuracy only counts one direction.** `abstention_correct` is
+computed for cases the golden set marks `expect_abstain` and left null for the
+rest, so the metric measures how often the pipeline abstains when it should and
+never how often it abstains when it should not. The over-abstention that
+[the ablation](retrieval-ablation.md) found — `policy` at 0.889 and `distractor`
+at 0.875 — shows up in correctness rather than here, which is the only reason it
+was visible at all. A symmetric metric would need the golden set to mark cases
+that must *not* abstain, which it does not.
+
 **Every performance number was measured at 27 chunks.** The corpus is now
 40,079 chunks and [Throughput](operations.md#throughput) has not been re-run
 against it, so the 592 rps ceiling and the head-of-line result describe a corpus
