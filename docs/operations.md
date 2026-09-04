@@ -135,6 +135,15 @@ itself.
 End-to-end throughput with a model in the path measures the model provider, so
 the phases separate what this service contributes from what it waits on.
 
+> **Every number below was measured on a 27-chunk corpus.** The corpus is now
+> [40,079 chunks](scaling-the-corpus.md), and none of these has been re-run
+> against it. Two of them plausibly move: retrieval latency, because HNSW search
+> and the sparse index both grow with the corpus, and the head-of-line result,
+> because the work a single request does is larger. The cache-hit ceiling
+> should not move, because a cache hit never reaches the index at all — but
+> "should not" is a prediction, not a measurement, and it is written here so it
+> can be checked rather than assumed.
+
 **Cache-hit path**, no model call, one replica at 2 CPU:
 
 | Concurrency | rps | p50 | p95 |

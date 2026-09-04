@@ -213,6 +213,7 @@ samples/eval     Golden question set (53 cases, tagged by category)
 docs/            Deep dives behind each number above, plus the demo recording
 docs/data/       Raw ablation output, so the tables can be audited not believed
 scripts/         Deploy, eval gate, and the harnesses behind the numbers above
+                 (scripts/README.md maps them by what they measure)
 infra/k8s/       Kubernetes manifests (Redis, Qdrant, API, worker, frontend)
 ```
 

@@ -43,7 +43,12 @@ def anchors_of(path: Path) -> set[str]:
 
 def main() -> int:
     files = sorted(
-        [ROOT / "README.md", *(ROOT / "docs").glob("*.md"), *(ROOT / "docs/data").glob("*.md")]
+        [
+            ROOT / "README.md",
+            ROOT / "scripts" / "README.md",
+            *(ROOT / "docs").glob("*.md"),
+            *(ROOT / "docs/data").glob("*.md"),
+        ]
     )
     anchor_cache: dict[Path, set[str]] = {}
     problems: list[str] = []

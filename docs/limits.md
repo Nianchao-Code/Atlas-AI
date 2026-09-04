@@ -16,6 +16,14 @@ replicas; the JSON one stays because a demo should show numbers without asking
 you to stand up a scraper first. It is the last piece of per-process state in
 the service, and unlike the sparse index it never affected an answer.
 
+**Every performance number was measured at 27 chunks.** The corpus is now
+40,079 chunks and [Throughput](operations.md#throughput) has not been re-run
+against it, so the 592 rps ceiling and the head-of-line result describe a corpus
+three orders of magnitude smaller than the one loaded. The retrieval quality
+numbers *were* re-measured — see [scaling the corpus](scaling-the-corpus.md) —
+and they moved enough to reverse a conclusion, which is the reason to distrust
+the latency ones until they are re-run.
+
 **Auth is service-level, not user identity.** Every `/api/v1` route requires
 an API key mapped to a named principal, and the semantic cache and rate limit
 budget are both keyed by that principal. What it does not have is per-user
