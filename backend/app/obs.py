@@ -147,15 +147,25 @@ class TokenCounter:
     def count(self, text: str) -> int:
         return len(self._get().encode(text or ""))
 
-    def pack(self, chunks: list[str], budget: int) -> tuple[list[str], int, int]:
-        """Greedy pack until budget. Returns kept, used tokens, dropped tokens."""
-        kept: list[str] = []
+    def pack(self, chunks: list[str], budget: int) -> tuple[list[int], int, int]:
+        """Greedy pack until budget. Returns kept indices, used tokens, dropped.
+
+        Indices rather than the texts themselves, because the caller has to map
+        what was kept back to the passages it came from. Doing that by content
+        works only while no two passages can produce the same string, which is
+        an invariant nothing states and nothing enforces -- and getting it wrong
+        means citing a passage the model was never shown.
+
+        Kept is a subsequence, not a prefix: an oversized chunk is skipped and
+        the next one still gets its chance.
+        """
+        kept: list[int] = []
         used = 0
         dropped = 0
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks):
             n = self.count(chunk)
             if used + n <= budget:
-                kept.append(chunk)
+                kept.append(i)
                 used += n
             else:
                 dropped += n

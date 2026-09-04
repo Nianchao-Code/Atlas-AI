@@ -308,8 +308,8 @@ class Pipeline:
         tracer: Tracer = state["tracer"]
         parents = _unique_parents(state.get("hits") or [])[: settings.rerank_k]
         texts = [self._sanitize(h.parent_text) for h in parents]
-        kept_texts, used, dropped = tokens.pack(texts, settings.token_budget)
-        packed = [h for h, t in zip(parents, texts, strict=False) if t in kept_texts]
+        kept, used, dropped = tokens.pack(texts, settings.token_budget)
+        packed = [parents[i] for i in kept]
         naive = sum(tokens.count(h.text) for h in (state.get("hits") or [])[:8])
         saved = max(0, naive - used)
         tracer.span("compress", f"packed={len(packed)} used={used} saved={saved}")
