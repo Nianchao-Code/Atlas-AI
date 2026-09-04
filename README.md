@@ -57,6 +57,14 @@ that produced it.
   the vectors into Qdrant deleted all of it — and retrieved *better* than the
   library it replaced.
 
+- **[Three generators before the corpus was trustworthy.](docs/scaling-the-corpus.md)**
+  Scaling from 8 to 10,000 documents made recall a metric again — it had scored
+  1.000 for every retriever because there were eight documents to choose from.
+  The first generator produced 1,649 near-identical leave policies and a finding
+  that had to be thrown away; the second flattered sparse retrieval to a perfect
+  53/53 by never letting a distractor name the company. Both passed the
+  vocabulary checks. Neither passed the ones added afterwards.
+
 - **[Three features shipped silently inert, and none of them failed.](docs/limits.md)**
   API auth was disabled by an env-var name mismatch. The paraphrase cache never
   matched. The CI eval gate skipped every run because a step's own `env` is not
@@ -77,6 +85,7 @@ that produced it.
 [injection resistance](docs/injection.md) ·
 [cost](docs/cost.md) ·
 [operations](docs/operations.md) ·
+[scaling the corpus](docs/scaling-the-corpus.md) ·
 [limits](docs/limits.md)
 
 ## Architecture
