@@ -156,3 +156,86 @@ async def test_text_in_the_job_is_used_without_touching_the_path():
     job = {"doc_id": "d1", "filename": "d1.md", "path": "/nope/missing.md", "text": DOC}
 
     assert await Indexer(_FakeCache(), _FakeVectors(), catalog).index_job(job) > 0
+
+
+class _Envelope:
+    def __init__(self, job: dict) -> None:
+        self.job = job
+        self.msg_id = job["doc_id"]
+
+
+class _FakeQueue:
+    """Yields a fixed set of jobs once, and records what was acked."""
+
+    def __init__(self, jobs: list[dict]) -> None:
+        self.pending = [_Envelope(j) for j in jobs]
+        self.acked: list[str] = []
+
+    async def jobs(self, consumer: str | None = None):
+        for env in list(self.pending):
+            yield env
+
+    async def ack(self, envelope) -> None:
+        self.acked.append(envelope.msg_id)
+
+
+class _ExplodingIndexer:
+    def __init__(self, fail_on: set[str]) -> None:
+        self.fail_on = fail_on
+        self.attempts: list[str] = []
+
+    async def index_job(self, job: dict) -> int:
+        doc_id = job["doc_id"]
+        self.attempts.append(doc_id)
+        if doc_id in self.fail_on:
+            raise RuntimeError("cannot index this one")
+        return 3
+
+
+async def test_a_job_that_cannot_be_indexed_is_still_acked():
+    # An unacked message stays in the consumer group's pending list and
+    # XAUTOCLAIM redelivers it, so one bad document loops forever. The
+    # standalone worker acked on failure and the embedded copy did not; this is
+    # the behaviour that divergence cost.
+    from app.indexer import consume
+
+    queue = _FakeQueue([{"doc_id": "bad", "filename": "bad.md", "text": "x"}])
+    catalog = _FakeCatalog([_rec("bad")])
+
+    await consume(_ExplodingIndexer({"bad"}), queue, catalog, consumer="test")
+
+    assert queue.acked == ["bad"]
+    assert catalog.records["bad"].status == "failed"
+    assert catalog.records["bad"].error == "index_failed"
+
+
+async def test_a_successful_job_is_acked_once():
+    from app.indexer import consume
+
+    queue = _FakeQueue([{"doc_id": "ok", "filename": "ok.md", "text": "x"}])
+    await consume(_ExplodingIndexer(set()), queue, _FakeCatalog([_rec("ok")]), consumer="test")
+
+    assert queue.acked == ["ok"]
+
+
+async def test_one_poisonous_job_does_not_stop_the_ones_behind_it():
+    from app.indexer import consume
+
+    jobs = [{"doc_id": d, "filename": f"{d}.md", "text": "x"} for d in ("a", "bad", "b")]
+    queue = _FakeQueue(jobs)
+    indexer = _ExplodingIndexer({"bad"})
+
+    await consume(indexer, queue, _FakeCatalog([_rec("a"), _rec("bad"), _rec("b")]), consumer="t")
+
+    assert indexer.attempts == ["a", "bad", "b"]
+    assert queue.acked == ["a", "bad", "b"]
+
+
+async def test_a_failure_for_an_unlisted_document_is_acked_too():
+    # No catalogue record to mark failed, and nothing to retry against either.
+    from app.indexer import consume
+
+    queue = _FakeQueue([{"doc_id": "ghost", "filename": "g.md", "text": "x"}])
+    await consume(_ExplodingIndexer({"ghost"}), queue, _FakeCatalog([]), consumer="test")
+
+    assert queue.acked == ["ghost"]

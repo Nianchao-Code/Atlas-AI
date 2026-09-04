@@ -26,11 +26,10 @@ from app.config import settings
 from app.eval_jobs import EvalJob, EvalRunner
 from app.evaluate import load_golden
 from app.graph import Pipeline
-from app.indexer import Indexer
+from app.indexer import Indexer, consume
 from app.llm import llm_configured
 from app.metrics import (
     AUTH_REJECTIONS,
-    INDEX_JOBS,
     UPLOAD_REJECTIONS,
     observe_query,
     set_corpus_size,
@@ -107,22 +106,11 @@ async def _consume_index_jobs() -> None:
     Docker compose and Kubernetes both run a dedicated worker instead
     (EMBEDDED_WORKER=false). Either way the API sees the result immediately:
     indexing writes to Qdrant and both retrievers read from there.
+
+    The loop itself lives in app.indexer and is shared with the standalone
+    worker, because two copies of it diverged once already.
     """
-    async for envelope in state.queue.jobs(consumer="api-embedded"):
-        job = envelope.job
-        try:
-            n = await state.indexer.index_job(job)
-            await state.queue.ack(envelope)
-            INDEX_JOBS.labels(outcome="indexed").inc()
-            log.info("index.ok", doc_id=job.get("doc_id"), chunks=n)
-        except Exception:
-            INDEX_JOBS.labels(outcome="failed").inc()
-            log.exception("index.failed", doc_id=job.get("doc_id"))
-            rec = await state.catalog.get(job.get("doc_id", ""))
-            if rec:
-                rec.status = "failed"
-                rec.error = "index_failed"
-                await state.catalog.upsert(rec)
+    await consume(state.indexer, state.queue, state.catalog, consumer="api-embedded")
 
 
 StateDep = Annotated[AppState, Depends(get_state)]

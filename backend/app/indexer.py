@@ -7,6 +7,7 @@ import structlog
 
 from app.chunking import chunk_document, parse_file
 from app.llm import embed_texts
+from app.metrics import INDEX_JOBS
 from app.obs import Cache
 from app.store_docs import Catalog
 from app.vectors import VectorStore
@@ -75,3 +76,37 @@ class Indexer:
         # and with nothing naming the invariant that was broken.
         assert all(v is not None for v in out), "embedding count does not match chunk count"
         return [v for v in out if v is not None]
+
+
+async def consume(indexer: Indexer, queue, catalog: Catalog, consumer: str) -> None:
+    """Drain the index queue forever, acking whatever the outcome was.
+
+    The standalone worker and the API's embedded worker each had their own copy
+    of this, and the copies diverged: one acked a failed job and the other did
+    not. An unacked message stays in the consumer group's pending list, and
+    XAUTOCLAIM redelivers it, so a single document that cannot be indexed loops
+    forever and re-runs its own failure on every pass.
+
+    A failure is acked because it is recorded: the record is marked `failed`
+    with a reason, which is a durable outcome. Redelivering it would repeat work
+    that has already been accounted for.
+    """
+    async for envelope in queue.jobs(consumer=consumer):
+        job = envelope.job
+        doc_id = job.get("doc_id", "")
+        try:
+            n = await indexer.index_job(job)
+            INDEX_JOBS.labels(outcome="indexed").inc()
+            log.info("index.ok", doc_id=doc_id, chunks=n, consumer=consumer)
+        except Exception:
+            INDEX_JOBS.labels(outcome="failed").inc()
+            log.exception("index.failed", doc_id=doc_id, consumer=consumer)
+            rec = await catalog.get(doc_id)
+            if rec:
+                rec.status = "failed"
+                rec.error = "index_failed"
+                await catalog.upsert(rec)
+        finally:
+            # Always, and in a finally: an ack skipped on one branch is how the
+            # two copies of this loop came to disagree.
+            await queue.ack(envelope)

@@ -6,12 +6,11 @@ import logging
 import structlog
 
 from app.config import settings
-from app.indexer import Indexer
-from app.metrics import INDEX_JOBS, set_corpus_size
+from app.indexer import Indexer, consume
 from app.obs import Cache
 from app.redis_client import create_redis
 from app.startup import await_dependency
-from app.store_docs import Catalog, IndexQueue
+from app.store_docs import Catalog, IndexQueue, worker_consumer_id
 from app.vectors import VectorStore
 
 log = structlog.get_logger()
@@ -41,24 +40,10 @@ async def run_worker() -> None:
     try:
         while True:
             try:
-                async for envelope in queue.jobs():
-                    job = envelope.job
-                    try:
-                        n = await indexer.index_job(job)
-                        await queue.ack(envelope)
-                        INDEX_JOBS.labels(outcome="indexed").inc()
-                        set_corpus_size(*await catalog.counts())
-                        log.info("worker.indexed", doc_id=job.get("doc_id"), chunks=n)
-                    except Exception:
-                        INDEX_JOBS.labels(outcome="failed").inc()
-                        log.exception("worker.failed", doc_id=job.get("doc_id"))
-                        rec = await catalog.get(job.get("doc_id", ""))
-                        if rec:
-                            rec.status = "failed"
-                            rec.error = "index_failed"
-                            await catalog.upsert(rec)
-                        await queue.ack(envelope)
+                await consume(indexer, queue, catalog, consumer=worker_consumer_id())
             except Exception:
+                # The loop itself failing -- a dropped Redis connection, say --
+                # is not a reason to stop consuming.
                 log.exception("worker.loop.retry")
                 await asyncio.sleep(1)
     finally:
