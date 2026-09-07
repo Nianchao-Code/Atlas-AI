@@ -2,7 +2,8 @@
   "smoke": {
     "min_retrieval_recall": 0.75,
     "min_abstention_accuracy": 0.0,
-    "max_hallucination_rate": 1.0
+    "max_hallucination_rate": 1.0,
+    "max_over_abstention_rate": 0.15
   },
   "full": {
     "min_retrieval_recall": 0.9,
@@ -10,6 +11,7 @@
     "min_mean_correctness": 0.85,
     "max_hallucination_rate": 0.05,
     "min_abstention_accuracy": 0.6,
+    "max_over_abstention_rate": 0.15,
     "min_token_reduction_pct": 45.0
   }
 }

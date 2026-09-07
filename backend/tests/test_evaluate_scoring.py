@@ -74,3 +74,94 @@ def test_keyword_correctness_rewards_substrings_not_meaning():
     # The keyless fallback is lexical. It scores a refusal that happens to
     # quote the figure, and this is why the LLM judge exists.
     assert _keyword_correctness("I cannot say whether it is 15 days", ["15"]) == 1.0
+
+
+class _FakePipeline:
+    """Answers or abstains according to a per-question script."""
+
+    def __init__(self, abstain_on: set[str]) -> None:
+        self.abstain_on = abstain_on
+
+    async def ainvoke(self, question: str, use_cache: bool = False) -> dict:
+        abstained = question in self.abstain_on
+        return {
+            "answer": "" if abstained else "the answer is 15",
+            "citations": [] if abstained else [{"filename": "02-leave.md", "doc_id": "d1"}],
+            "faithfulness": 0.0 if abstained else 1.0,
+            "abstained": abstained,
+            "prompt_tokens": 100,
+            "tokens_saved_vs_naive": 100,
+            "retrieval_ms": 10.0,
+        }
+
+
+def _cases() -> list[dict]:
+    answerable = [
+        {
+            "id": f"a{i}",
+            "question": f"answerable {i}",
+            "expected_docs": ["02-leave.md"],
+            "key_points": ["15"],
+        }
+        for i in range(4)
+    ]
+    refusable = [
+        {
+            "id": f"r{i}",
+            "question": f"unanswerable {i}",
+            "expected_docs": [],
+            "key_points": [],
+            "expect_abstain": True,
+        }
+        for i in range(2)
+    ]
+    return answerable + refusable
+
+
+async def _run(monkeypatch, abstain_on: set[str]):
+    from app import evaluate
+
+    monkeypatch.setattr(evaluate, "load_golden", _cases)
+    return await evaluate.run_eval(_FakePipeline(abstain_on))
+
+
+async def test_a_perfect_run_scores_both_directions(monkeypatch):
+    report = await _run(monkeypatch, {"unanswerable 0", "unanswerable 1"})
+    assert report.abstention_accuracy == 1.0
+    assert report.over_abstention_rate == 0.0
+
+
+async def test_refusing_a_question_the_corpus_answers_is_counted(monkeypatch):
+    # The failure the old metric could not see. `abstention_accuracy` stays
+    # perfect here -- every case that should abstain did -- and the only thing
+    # that moves is the new rate.
+    report = await _run(
+        monkeypatch, {"unanswerable 0", "unanswerable 1", "answerable 0", "answerable 1"}
+    )
+    assert report.abstention_accuracy == 1.0
+    assert report.over_abstention_rate == 0.5
+
+
+async def test_the_two_rates_are_independent(monkeypatch):
+    # Answers everything: fails every refusal, over-abstains on nothing.
+    report = await _run(monkeypatch, set())
+    assert report.abstention_accuracy == 0.0
+    assert report.over_abstention_rate == 0.0
+
+
+async def test_refusing_everything_is_not_a_perfect_score(monkeypatch):
+    # The degenerate pipeline the one-directional metric rewarded: refuse every
+    # question and score 1.000 on abstention. It now also scores 1.000 on the
+    # rate that says it is useless.
+    report = await _run(monkeypatch, {c["question"] for c in _cases()})
+    assert report.abstention_accuracy == 1.0
+    assert report.over_abstention_rate == 1.0
+
+
+async def test_every_case_is_scored_in_both_directions(monkeypatch):
+    # `abstention_correct` used to be None for anything not expecting an
+    # abstention, which is what made the metric one-sided.
+    report = await _run(monkeypatch, {"unanswerable 0"})
+    assert all(c.abstention_correct is not None for c in report.cases)
+    wrong = [c.id for c in report.cases if not c.abstention_correct]
+    assert wrong == ["r1"]

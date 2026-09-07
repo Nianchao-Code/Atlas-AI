@@ -250,10 +250,19 @@ python scripts/eval_gate.py --smoke
 python scripts/eval_gate.py --full
 ```
 
-Thresholds live in `samples/eval/thresholds.json` and are set below the worst
+Thresholds live in `samples/eval/thresholds.json` and are set outside the worst
 of two measured runs, not chosen by feel. The previous
 `min_abstention_accuracy: 1.0` was decided by the single abstention question
 the set had at the time; there are now seven.
+
+The abstention decision is checked in **both** directions. `abstention_accuracy`
+is how often the pipeline refuses when it should; `over_abstention_rate` is how
+often it refuses a question the corpus can answer, which is the failure the
+metric could not see until it was scored on the 46 cases that carry
+`key_points`. Two runs measured 0.065 and 0.087, so `max_over_abstention_rate`
+is 0.15 — six of 46 cases, two above the worst seen, because the two runs
+already differ by one case and a threshold that flaps on one case is a
+threshold that gets ignored.
 
 ## Limits
 
@@ -262,9 +271,12 @@ replacement for each. The short version: the SLI counters are per-process
 (Prometheus is the cross-replica answer); auth is service-level rather than user
 identity; the regex injection guard catches literal phrasings and nothing else,
 at a measured 7/11 bypass rate; the paraphrase cache catches roughly two thirds
-of rewordings; the cross-encoder is off because the ablation measured it at
-zero; and an upload whose bytes died with the pod's `emptyDir` cannot be
-recovered, only marked failed.
+of rewordings; the pipeline refuses about one answerable question in fifteen,
+and three of those four are questions whose answer is "no";
+the throughput figures carry a ±10% run-to-run noise floor, so single-run
+comparisons between them mean nothing; the cross-encoder is off because the
+ablation measured it at zero; and an upload whose bytes died with the pod's
+`emptyDir` cannot be recovered, only marked failed.
 
 ## Sample corpus
 

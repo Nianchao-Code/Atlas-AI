@@ -122,7 +122,14 @@ async def run_eval(
                 q, payload["answer"], case.get("key_points") or []
             )
         hallucinated = (not payload["abstained"]) and faith < 0.5
-        abstention_correct = payload["abstained"] == expect_abstain if expect_abstain else None
+        # Scored in both directions. This used to be None unless the case
+        # expected an abstention, which meant the metric could only ever see
+        # the pipeline failing to refuse -- never refusing a question it was
+        # supposed to answer. The golden set always had what the other
+        # direction needs: every case that is not `expect_abstain` carries
+        # `key_points` and `expected_docs`, so it is by construction a question
+        # with an answer in the corpus. Nobody was reading it.
+        abstention_correct = payload["abstained"] == expect_abstain
         naive = payload["prompt_tokens"] + payload["tokens_saved_vs_naive"]
         naive_tokens.append(naive or 8 * 240)
         results.append(
@@ -149,6 +156,13 @@ async def run_eval(
     n = len(results) or 1
     recall_cases = [r for r, c in zip(results, cases, strict=True) if c.get("expected_docs")]
     abstain_cases = [(r, c) for r, c in zip(results, cases, strict=True) if c.get("expect_abstain")]
+    # The other half of the same decision: questions the corpus can answer, on
+    # which abstaining is the failure. Kept as a separate rate rather than
+    # folded into one accuracy figure because the two errors cost different
+    # things -- answering what should be refused invents facts, refusing what
+    # should be answered is merely useless -- and one number averaging them
+    # would hide which is happening.
+    answer_cases = [r for r, c in zip(results, cases, strict=True) if not c.get("expect_abstain")]
     retrievals = [r.retrieval_ms for r in results]
     p95 = retrievals[0] if len(retrievals) < 2 else quantiles(retrievals, n=20)[18]
     mean_prompt = sum(r.prompt_tokens for r in results) / n
@@ -168,6 +182,9 @@ async def run_eval(
             sum(1 for r, _ in abstain_cases if r.abstention_correct) / len(abstain_cases)
             if abstain_cases
             else 0.0
+        ),
+        over_abstention_rate=(
+            sum(1 for r in answer_cases if r.abstained) / len(answer_cases) if answer_cases else 0.0
         ),
         p95_retrieval_ms=round(p95, 2),
         mean_prompt_tokens=round(mean_prompt, 1),

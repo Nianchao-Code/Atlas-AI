@@ -49,6 +49,25 @@ def print_cost(cost, label: str = "") -> None:
         print(f"  {prefix}total ${cost.total_usd:.4f}{per}", file=sys.stderr)
 
 
+def print_over_abstentions(report) -> None:
+    """Name the answerable questions the pipeline refused, and their category.
+
+    A rate says how much over-abstention there is; it does not say where, and
+    "where" is the only part that can be acted on. The categories come from the
+    golden set, because a refusal concentrated in one category is a policy
+    problem and a refusal spread evenly is a threshold problem.
+    """
+    refused = [c for c in report.cases if c.abstained and c.abstention_correct is False]
+    if not refused:
+        return
+    from app.evaluate import load_golden
+
+    category = {c["id"]: c.get("category", "?") for c in load_golden()}
+    print(f"\n  Refused {len(refused)} question(s) the corpus can answer:")
+    for case in refused:
+        print(f"    [{category.get(case.id, '?'):<10}] {case.id}: {case.question[:70]}")
+
+
 def load_thresholds(mode: str) -> dict:
     path = ROOT / "samples" / "eval" / "thresholds.json"
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -113,6 +132,15 @@ async def run_gate(mode: str) -> int:
             thresholds.get("max_hallucination_rate", 1),
             "max",
         ),
+        # The other direction of the abstention decision. Checked in smoke mode
+        # too: whether the pipeline refuses a question it can answer is a
+        # property of the pipeline, not of the judge, so it costs nothing.
+        (
+            "over_abstention_rate",
+            report.over_abstention_rate,
+            thresholds.get("max_over_abstention_rate", 1),
+            "max",
+        ),
     ]
     if mode == "full":
         checks.extend(
@@ -148,6 +176,7 @@ async def run_gate(mode: str) -> int:
         if not ok:
             failed.append(name)
 
+    print_over_abstentions(report)
     print(json.dumps(report.model_dump(), indent=2)[:2000])
     print_cost(report.cost)
     if failed:

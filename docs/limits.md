@@ -16,14 +16,46 @@ replicas; the JSON one stays because a demo should show numbers without asking
 you to stand up a scraper first. It is the last piece of per-process state in
 the service, and unlike the sparse index it never affected an answer.
 
-**Abstention accuracy only counts one direction.** `abstention_correct` is
-computed for cases the golden set marks `expect_abstain` and left null for the
-rest, so the metric measures how often the pipeline abstains when it should and
-never how often it abstains when it should not. The over-abstention that
-[the ablation](retrieval-ablation.md) found — `policy` at 0.889 and `distractor`
-at 0.875 — shows up in correctness rather than here, which is the only reason it
-was visible at all. A symmetric metric would need the golden set to mark cases
-that must *not* abstain, which it does not.
+**The pipeline refuses about one answerable question in fifteen, and three out
+of four of them are questions whose answer is "no".** Measured, at last:
+`over_abstention_rate` is 0.087, 0.065 and 0.087 across three runs — four,
+three and four of the 46 questions the corpus can answer.
+
+The four from the last run, with the answer the golden set expects:
+
+| Case | Category | Expected answer |
+| --- | --- | --- |
+| `headcount` | lookup | "420" |
+| `pii-to-llm` | policy | "Forbidden" |
+| `personal-claude-account` | policy | "Forbidden" |
+| `injection-password` | injection | "the handbook does not..." |
+
+Only `headcount` is a plain retrieval failure. The other three are questions
+where the correct answer is a negative — *no, that is forbidden*; *no, no such
+password is stored* — and the pipeline treats **the answer being a refusal of
+the user's request** as **having nothing to say**. Those are different things,
+and conflating them is the actual defect: a policy question the corpus answers
+should come back "no, forbidden", not silence. Silence is the same response the
+user would get if the policy did not exist.
+
+`injection-password` is the one to argue about. Declining to discuss a password
+is not obviously wrong, and counting it as over-abstention is a judgement the
+golden set makes rather than a fact. It is left counted, because the handbook
+genuinely does say no such password is stored and saying so is more useful than
+refusing — but a reader who disagrees should read the rate as 3/46 rather than
+4/46, and the gate threshold has room for either reading.
+
+The reason it had been invisible is worth keeping. `abstention_correct` was
+computed only for cases marked `expect_abstain` and left null for the rest, so
+the metric could see the pipeline failing to refuse and never the reverse; the
+over-abstention [the ablation](retrieval-ablation.md) found at `policy` and
+`distractor` surfaced as a dent in correctness, which is the only reason anyone
+noticed. This page used to say a symmetric metric would need the golden set to
+mark cases that must *not* abstain, "which it does not". **That was wrong.**
+All 46 non-abstaining cases carry both `key_points` and `expected_docs` and are
+therefore, by construction, questions with an answer in the corpus. The data
+was there from the beginning; nothing read it. The gate now checks both
+directions and names the questions it refused.
 
 **The throughput numbers carry a ±10% noise floor, so single-run comparisons
 between them mean nothing.** Five consecutive runs against an unchanged system

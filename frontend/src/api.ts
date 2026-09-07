@@ -58,6 +58,7 @@ export type EvalReport = {
   mean_correctness: number;
   hallucination_rate: number;
   abstention_accuracy: number;
+  over_abstention_rate: number;
   p95_retrieval_ms: number;
   mean_prompt_tokens: number;
   naive_prompt_tokens: number;

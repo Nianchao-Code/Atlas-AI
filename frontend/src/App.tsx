@@ -316,7 +316,8 @@ function EvalView({ report }: { report: EvalReport }) {
       ["Faithfulness", pct(report.mean_faithfulness)],
       ["Correctness", pct(report.mean_correctness)],
       ["Hallucination rate", pct(report.hallucination_rate)],
-      ["Abstention accuracy", pct(report.abstention_accuracy)],
+      ["Abstained when it should", pct(report.abstention_accuracy)],
+      ["Abstained when it should not", pct(report.over_abstention_rate ?? 0)],
       ["Tokens vs naive", `-${report.token_reduction_pct.toFixed(0)}%`],
     ],
     [report]

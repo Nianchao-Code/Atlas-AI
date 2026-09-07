@@ -10,7 +10,7 @@ grouped by what they are for, because "fifteen Python files" is not a map.
 | `ablation.py` | What each retrieval stage buys, one configuration per row, plus a control row that measures the harness's own noise floor. `--resume` and `--only` because a 45-minute run should not be all-or-nothing. | ~$1.12 |
 | `ablation_variance.py` | Reads an ablation's raw output and asks how much of a gap is real — which cases flipped between repeats, and between two configurations that were the same pipeline. | free |
 | `eval_gate.py` | The golden set against thresholds. `--smoke` needs no API key and runs in CI on every push; `--full` runs on pushes to main. | ~$0.06 |
-| `loadtest.py` | What one replica serves: the cache-hit ceiling, head-of-line blocking under a slow request, and the cold path. Run from inside the cluster — `port-forward` serialises connections and would measure itself. | ~$0.02 |
+| `loadtest.py` | What one replica serves: the cache-hit ceiling, head-of-line blocking under a slow request, and the cold path. `--phase noise` repeats the sweep against an unchanged system and prints the spread, which is about 10% — run it before believing any comparison. Run from inside the cluster — `port-forward` serialises connections and would measure itself, and the rate limit has to be lifted or the benchmark measures the throttle. | ~$0.02 |
 | `corpus_stats.py` | Whether a corpus behaves like natural language, before any retrieval result measured on it is believed. Heaps β, Zipf slope, and the concentration checks that were added after they were needed. | free |
 
 ## Prove a specific claim by breaking it

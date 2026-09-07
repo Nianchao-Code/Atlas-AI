@@ -100,6 +100,14 @@ the ones whose retrieval collapsed. The faithfulness gate holds: given bad
 passages the pipeline answers wrongly from them or abstains, rather than
 inventing. That is the one claim scaling did not dent.
 
+**Neither table has the `Over-abst.` column the script now prints.** Both were
+run while the eval scored abstention in one direction only, so a configuration
+that refused questions the corpus could answer paid for it in correctness and
+nowhere else — which is how "answers wrongly from them or abstains" above ended
+up as one clause covering two very different behaviours. The column exists now
+and will populate on the next run; until then, treat the correctness column in
+these tables as carrying both effects at once.
+
 ---
 
 Back to the [README](../README.md).

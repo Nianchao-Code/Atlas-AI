@@ -17,6 +17,7 @@ const REPORT = {
   mean_correctness: 1,
   hallucination_rate: 0,
   abstention_accuracy: 1,
+  over_abstention_rate: 0,
   p95_retrieval_ms: 10,
   mean_prompt_tokens: 100,
   naive_prompt_tokens: 200,

@@ -95,6 +95,11 @@ METRICS = [
     ("mean_faithfulness", "Faithful", "{:.3f}"),
     ("mean_correctness", "Correct", "{:.3f}"),
     ("hallucination_rate", "Halluc.", "{:.3f}"),
+    # The over-abstention this ablation found at `policy` and `distractor` was
+    # only ever visible as a dent in correctness, because the eval reported
+    # abstention in one direction. It reports both now, so the configuration
+    # that refuses answerable questions says so in its own column.
+    ("over_abstention_rate", "Over-abst.", "{:.3f}"),
     ("p95_retrieval_ms", "p95 ms", "{:.0f}"),
     ("mean_prompt_tokens", "Tokens", "{:.0f}"),
 ]

@@ -94,7 +94,12 @@ class EvalReport(BaseModel):
     mean_faithfulness: float
     mean_correctness: float
     hallucination_rate: float
+    # Two rates, not one accuracy: `abstention_accuracy` is how often the
+    # pipeline refuses when it should, `over_abstention_rate` how often it
+    # refuses when it should not. Averaging them would hide which error is
+    # happening, and they are not equally bad.
     abstention_accuracy: float
+    over_abstention_rate: float = 0.0
     p95_retrieval_ms: float
     mean_prompt_tokens: float
     naive_prompt_tokens: float
