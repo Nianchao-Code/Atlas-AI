@@ -269,3 +269,7 @@ recovered, only marked failed.
 ## Sample corpus
 
 Fictional **Kepler Robotics** internal handbook: leave policy, data handling, incident response, vendor terms, and a deliberate indirect-injection document for guardrail testing.
+
+## License
+
+[MIT](LICENSE).
