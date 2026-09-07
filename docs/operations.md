@@ -135,49 +135,76 @@ itself.
 End-to-end throughput with a model in the path measures the model provider, so
 the phases separate what this service contributes from what it waits on.
 
-> **Every number below was measured on a 27-chunk corpus.** The corpus is now
-> [40,079 chunks](scaling-the-corpus.md), and none of these has been re-run
-> against it. Two of them plausibly move: retrieval latency, because HNSW search
-> and the sparse index both grow with the corpus, and the head-of-line result,
-> because the work a single request does is larger. The cache-hit ceiling
-> should not move, because a cache hit never reaches the index at all — but
-> "should not" is a prediction, not a measurement, and it is written here so it
-> can be checked rather than assumed.
+Everything here was measured twice: once at 27 chunks, and again at
+[40,079 chunks](scaling-the-corpus.md). The second run existed to check a
+prediction this page used to make — that the cache-hit ceiling would not move,
+because a cache hit never reaches the index at all. **It moved.**
 
-**Cache-hit path**, no model call, one replica at 2 CPU:
+**Cache-hit path**, no model call, one replica at 2 CPU. p50 and p95 are from
+the 40,079-chunk run:
 
-| Concurrency | rps | p50 | p95 |
-| --- | --- | --- | --- |
-| 1 | 418 | 2.3ms | 2.7ms |
-| 4 | 531 | 7.5ms | 9.0ms |
-| 8 | 562 | 14.0ms | 16.6ms |
-| **16** | **592** | 26.4ms | 31.7ms |
-| 32 | 524 | 51.7ms | 96.6ms |
-| 64 | 528 | 97.2ms | 237.3ms |
+| Concurrency | rps @ 27 | rps @ 40,079 | p50 | p95 |
+| --- | --- | --- | --- | --- |
+| 1 | 418 | 374 | 2.6ms | 2.9ms |
+| 2 | — | 416 | 4.8ms | 5.3ms |
+| 4 | 531 | 473 | 8.3ms | 10.2ms |
+| 8 | 562 | 496 | 15.7ms | 19.3ms |
+| **16** | **592** | **534** | 29.2ms | 36.6ms |
+| 32 | 524 | 500 | 55.9ms | 95.2ms |
+| 64 | 528 | 399 | 124.7ms | 139.5ms |
 
-Throughput peaks near concurrency 16 and then flattens while latency grows
-linearly — the saturation point, not a cliff. No errors at any level.
+The shape survived: throughput still peaks near concurrency 16 and then
+flattens while latency grows linearly, and there were no errors at any level.
+The ceiling did not — 592 rps became 534, about 10% lower, and every level
+below the peak dropped by a similar fraction.
 
-**Cold path**, model in the loop: 0.3 rps at concurrency 1 (p50 3.8s), 1.1 rps
-at concurrency 4 (p50 3.4s). Latency per request is flat as concurrency rises,
-so the service is holding requests rather than adding to them.
+**What this run cannot tell you is why.** A cache hit is answered from Redis
+without touching Qdrant, so corpus size has no path by which to slow it down.
+The competing explanation is that Qdrant now holds 40,079 points in the same
+single-node cluster, and the API replica has correspondingly less of the host
+to itself. Separating the two would need the small corpus stood back up on an
+otherwise identical machine, which is not something this setup can do. So the
+number is recorded as measured and the prediction is recorded as unconfirmed,
+rather than either being explained away.
+
+**Cold path**, model in the loop: 1.0 rps at concurrency 4, p50 3.5s, p95 4.6s.
+At 27 chunks it was 1.1 rps at the same concurrency with p50 3.4s — unchanged
+within noise, which is what a model-bound path should do.
+
+**Retrieval latency did move, and this is where it shows.** The eval gate
+measures p95 retrieval at **600.71ms** across its 53 questions at 40,079
+chunks. That is the HNSW search and the sparse index growing with the corpus,
+and it is separate from the cache-hit path above.
 
 **Head-of-line blocking**, which is the number moving synchronous work off the
-event loop exists to protect. Cache hits at concurrency 8, measured quiet, then measured again while
-one 5.2s model request is in flight:
+event loop exists to protect. Cache hits at concurrency 8, measured quiet, then
+measured again while one cold model request is in flight:
 
-| | p50 | p95 | over 100ms |
-| --- | --- | --- | --- |
-| quiet | 14.2ms | 15.8ms | 0 / 320 |
-| during a 5.2s request | 14.6ms | 21.4ms | 0 / 2360 |
+| | p50 | p95 | p99 | over 100ms |
+| --- | --- | --- | --- | --- |
+| quiet | 18.2ms | 21.1ms | 21.9ms | 0 / 320 |
+| during a 5.6s request | 16.1ms | 21.1ms | 73.8ms | 15 / 1560 |
 
-Not one of 2,360 concurrent requests crossed 100ms while a five-second request
-was running. Synchronous work on the event loop would show up here as a cluster
-of slow requests; a 1.36x p95 is ordinary contention.
+p95 is identical under load — 1.00x, against 1.36x at 27 chunks — so the
+property still holds at the percentile that describes the common case. The
+tail is worse than it was: p99 goes 21.9ms to 73.8ms, fifteen of 1,560 requests
+crossed 100ms where none of 2,360 did before, and one reached 1,461ms. That is
+a handful of outliers rather than the cluster of uniformly slow requests that
+blocking work on the event loop produces, but it is not zero any more, and
+saying so is the point of measuring twice.
 
 **The rate limit was the binding constraint, and it was a guess.** At 60/min
 the first run rate-limited 22 of 40 requests at concurrency 4, and all 40 at
 concurrency 16 — a service capable of 592 rps was capped at 1. The limit exists
 to bound spend rather than to protect the app, so it is now 300/min: far above
 any interactive session, far below what a runaway client could burn.
+
+300/min then ate the re-run. The first attempt at 40,079 chunks returned 429
+for every request from concurrency 32 onward, and for all 328 requests of the
+head-of-line and cold phases behind it — a load test measuring the throttle
+instead of the service. The numbers above come from a second run with
+`RATE_LIMIT_PER_MINUTE` temporarily raised, restored to 300 afterwards. Worth
+writing down twice: a spend guard sized for humans is not sized for the
+benchmark, and a benchmark that silently measures the guard reports whatever
+the guard does.
 

@@ -26,7 +26,7 @@ difference nobody checks before committing the frames.
 | **Orchestration** | LangGraph — guard → cache → rewrite → retrieve → rerank → grade → compress → generate → faithfulness |
 | **Quality** | 53-question golden set tagged by failure mode, plus an ablation with a control row that measures its own noise floor |
 | **Safety** | API-key auth, per-principal cache isolation and rate limiting; injection resistance measured across 17 attacks × 4 configurations |
-| **Ops** | 521MB image, non-root uid; horizontally scalable — no retrieval state in process memory; 592 rps cached, no head-of-line blocking |
+| **Ops** | 521MB image, non-root uid; horizontally scalable — no retrieval state in process memory; 534 rps cached at 40,079 chunks, p95 flat under a cold query |
 | **Ingest** | Async worker queue (Redis Streams, or Kafka); uploads streamed under a byte budget; the two stores reconciled at startup |
 
 ## What the measurements said

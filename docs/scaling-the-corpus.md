@@ -144,9 +144,29 @@ retrieval numbers end to end rather than softening them: dense-only correctness
 reaching recall 0.961. [The comparison is there](retrieval-ablation.md), both
 tables side by side.
 
-**Still not re-measured**: the eval gate and throughput. Both need the running
-service rather than retrieval alone, and neither has been run against 40,079
-chunks.
+**The eval gate and throughput have now run too**, and they are the two that
+needed the live service rather than retrieval alone.
+
+The gate passed all six thresholds against 40,079 chunks, on the thresholds set
+when the corpus was 27:
+
+| | measured | threshold |
+| --- | --- | --- |
+| retrieval_recall | 0.961 | min 0.90 |
+| abstention_accuracy | 0.857 | min 0.60 |
+| hallucination_rate | 0.000 | max 0.05 |
+| mean_faithfulness | 0.975 | min 0.92 |
+| mean_correctness | 0.906 | min 0.85 |
+| token_reduction_pct | 54.8 | min 45.0 |
+
+53 cases, $0.0546 total, $0.00103 per case. The number that moved is one the
+gate does not check: p95 retrieval latency is **600.71ms**, where the whole
+corpus used to fit in a single HNSW hop.
+
+Throughput moved in a way this setup cannot fully explain — the cache-hit
+ceiling fell from 592 rps to 534, on a path that never touches the index.
+[Throughput](operations.md#throughput) records both the number and the reason
+it is not attributable.
 
 ## Reproducing it
 

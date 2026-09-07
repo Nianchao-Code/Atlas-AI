@@ -25,13 +25,15 @@ at 0.875 — shows up in correctness rather than here, which is the only reason 
 was visible at all. A symmetric metric would need the golden set to mark cases
 that must *not* abstain, which it does not.
 
-**Every performance number was measured at 27 chunks.** The corpus is now
-40,079 chunks and [Throughput](operations.md#throughput) has not been re-run
-against it, so the 592 rps ceiling and the head-of-line result describe a corpus
-three orders of magnitude smaller than the one loaded. The retrieval quality
-numbers *were* re-measured — see [scaling the corpus](scaling-the-corpus.md) —
-and they moved enough to reverse a conclusion, which is the reason to distrust
-the latency ones until they are re-run.
+**The cache-hit ceiling dropped 10% and this setup cannot say why.**
+[Throughput](operations.md#throughput) has now been re-run at 40,079 chunks:
+592 rps became 534. A cache hit is served from Redis and never reaches Qdrant,
+so the corpus has no mechanism by which to slow it — the likelier explanation
+is that Qdrant's 40,079 points now share a single-node cluster with the API
+replica. Telling those apart needs the small corpus on an otherwise identical
+machine, which is not available here, so the number stands as measured and the
+cause stands as unknown. The tail moved too: fifteen of 1,560 requests crossed
+100ms during a cold query, against none of 2,360 before.
 
 **Auth is service-level, not user identity.** Every `/api/v1` route requires
 an API key mapped to a named principal, and the semantic cache and rate limit
