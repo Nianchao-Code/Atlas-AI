@@ -18,6 +18,11 @@ contributes.
         and included so the comparison with warm is on the page rather than
         assumed.
 
+  noise The warm sweep repeated against an unchanged system, which is what says
+        whether any of the above is precise enough to compare. It is not: the
+        spread is about 10%, and a 10% "regression" was once published from
+        this script before anyone ran it twice.
+
 Run it from inside the cluster; kubectl port-forward serialises connections and
 would measure itself:
 
@@ -123,11 +128,47 @@ async def phase_warm(client: httpx.AsyncClient, levels: list[int], per_level: in
         async with sem:
             return await ask(client, WARM_QUESTION)
 
+    rows = []
     for c in levels:
         sem = asyncio.Semaphore(c)
         t0 = time.perf_counter()
         samples = await asyncio.gather(*(bounded(sem) for _ in range(per_level)))
-        report(f"concurrency {c}", list(samples), time.perf_counter() - t0)
+        rows.append(report(f"concurrency {c}", list(samples), time.perf_counter() - t0))
+    return rows
+
+
+async def phase_noise(
+    client: httpx.AsyncClient, levels: list[int], per_level: int, repeats: int
+) -> None:
+    """Run the warm sweep repeatedly against an unchanged system.
+
+    This exists because a 10% difference between two single runs was once
+    reported here as a 10% regression. It was the spread. Nothing about the
+    system changes between these repeats, so whatever they disagree by is what
+    a single run is worth -- and any comparison smaller than that spread is
+    reporting the instrument.
+    """
+    print(f"=== noise: {repeats} identical runs of the warm sweep ===\n")
+    by_level: dict[int, list[float]] = {c: [] for c in levels}
+    for i in range(repeats):
+        print(f"--- repeat {i + 1}/{repeats}")
+        for row in await phase_warm(client, levels, per_level):
+            by_level[int(row["name"].split()[-1])].append(row["rps"])
+        print()
+
+    print(f"{'conc':>5} {'n':>3} {'min':>8} {'max':>8} {'mean':>8} {'spread':>8} {'% of mean':>10}")
+    for c in levels:
+        v = by_level[c]
+        if not v:
+            continue
+        mean = sum(v) / len(v)
+        spread = max(v) - min(v)
+        share = spread / mean * 100 if mean else 0.0
+        print(
+            f"{c:5d} {len(v):3d} {min(v):8.1f} {max(v):8.1f} {mean:8.1f} "
+            f"{spread:8.1f} {share:9.1f}%"
+        )
+    print("\nA difference smaller than the spread is not a finding.")
 
 
 async def phase_hol(client: httpx.AsyncClient, concurrency: int, rounds: int) -> None:
@@ -200,11 +241,14 @@ async def phase_cold(client: httpx.AsyncClient, concurrency: int, total: int) ->
 
 async def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", choices=["warm", "hol", "cold", "all"], default="all")
+    parser.add_argument("--phase", choices=["warm", "hol", "cold", "noise", "all"], default="all")
     parser.add_argument("--levels", default="1,2,4,8,16,32")
     parser.add_argument("--per-level", type=int, default=60)
     parser.add_argument("--cold-concurrency", type=int, default=4)
     parser.add_argument("--cold-total", type=int, default=8)
+    parser.add_argument(
+        "--repeats", type=int, default=5, help="identical warm sweeps for --phase noise"
+    )
     args = parser.parse_args()
 
     levels = [int(x) for x in args.levels.split(",")]
@@ -212,6 +256,10 @@ async def main() -> int:
     async with httpx.AsyncClient(base_url=BASE, limits=limits) as client:
         health = await client.get("/health", timeout=30)
         print(f"target {BASE} -> {health.json()}\n")
+
+        if args.phase == "noise":
+            await phase_noise(client, levels, args.per_level, args.repeats)
+            return 0
 
         if args.phase in ("warm", "all"):
             await phase_warm(client, levels, args.per_level)

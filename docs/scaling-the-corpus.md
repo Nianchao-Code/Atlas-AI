@@ -163,10 +163,13 @@ when the corpus was 27:
 gate does not check: p95 retrieval latency is **600.71ms**, where the whole
 corpus used to fit in a single HNSW hop.
 
-Throughput moved in a way this setup cannot fully explain — the cache-hit
-ceiling fell from 592 rps to 534, on a path that never touches the index.
-[Throughput](operations.md#throughput) records both the number and the reason
-it is not attributable.
+Throughput appeared to move — the cache-hit ceiling reading 534 rps where it
+had read 592 — and then five repeats showed that an unchanged system varies by
+9.7% between runs, which is the whole of the effect.
+[Throughput](operations.md#throughput) has the noise floor and what survives
+it. The short version: the shape survives, the ceiling comparison does not,
+and this is the second time on this project that a conclusion drawn from a
+single run turned out to be the measurement rather than the system.
 
 ## Reproducing it
 

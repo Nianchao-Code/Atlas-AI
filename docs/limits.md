@@ -25,15 +25,16 @@ at 0.875 — shows up in correctness rather than here, which is the only reason 
 was visible at all. A symmetric metric would need the golden set to mark cases
 that must *not* abstain, which it does not.
 
-**The cache-hit ceiling dropped 10% and this setup cannot say why.**
-[Throughput](operations.md#throughput) has now been re-run at 40,079 chunks:
-592 rps became 534. A cache hit is served from Redis and never reaches Qdrant,
-so the corpus has no mechanism by which to slow it — the likelier explanation
-is that Qdrant's 40,079 points now share a single-node cluster with the API
-replica. Telling those apart needs the small corpus on an otherwise identical
-machine, which is not available here, so the number stands as measured and the
-cause stands as unknown. The tail moved too: fifteen of 1,560 requests crossed
-100ms during a cold query, against none of 2,360 before.
+**The throughput numbers carry a ±10% noise floor, so single-run comparisons
+between them mean nothing.** Five consecutive runs against an unchanged system
+span 485–535 rps at concurrency 16 — a 9.7% spread — and 32.8% at concurrency
+32, where one of the five collapsed to 348 rps.
+[Throughput](operations.md#throughput) has the table. This retired a claim
+written on this page earlier the same day: that the cache-hit ceiling had
+dropped 10% at 40,079 chunks. It had not been shown to drop at all; 534 is an
+ordinary draw from the band, and the drop was the instrument. Anything built
+on comparing two single runs here is unsupported, including the comparison
+against the old 27-chunk figures, which were also n=1.
 
 **Auth is service-level, not user identity.** Every `/api/v1` route requires
 an API key mapped to a named principal, and the semantic cache and rate limit

@@ -135,15 +135,36 @@ itself.
 End-to-end throughput with a model in the path measures the model provider, so
 the phases separate what this service contributes from what it waits on.
 
-Everything here was measured twice: once at 27 chunks, and again at
-[40,079 chunks](scaling-the-corpus.md). The second run existed to check a
-prediction this page used to make — that the cache-hit ceiling would not move,
-because a cache hit never reaches the index at all. **It moved.**
+Everything here was measured at 27 chunks and again at
+[40,079 chunks](scaling-the-corpus.md), and then — because the second run
+appeared to show a 10% drop — five more times, to find out what a 10% number
+is worth here. It is worth nothing. **The run-to-run spread on an unchanged
+system is 9.7%.**
+
+**The noise floor.** Five consecutive runs of the same phase against the same
+corpus on the same replica, nothing changed between them
+(`python scripts/loadtest.py --phase noise --repeats 5`, run in the cluster —
+the rate limit has to be lifted first or the benchmark measures the throttle):
+
+| Concurrency | min | max | mean | spread | as % of mean |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 339.9 | 370.9 | 349.8 | 31.0 | 8.9% |
+| 4 | 425.2 | 470.7 | 449.1 | 45.5 | 10.1% |
+| 8 | 487.3 | 535.8 | 511.1 | 48.5 | 9.5% |
+| 16 | 485.5 | 535.3 | 512.3 | 49.8 | 9.7% |
+| 32 | 348.4 | 498.4 | 457.2 | 150.0 | **32.8%** |
+
+Every level below saturation moves by about a tenth of itself between
+identical runs, and concurrency 32 moves by a third — one of the five collapsed
+to 348 rps with thirty requests over 100ms while its neighbours held near 490.
+The concurrency that peaks is not stable either: it landed on 16 three times
+and on 8 twice.
 
 **Cache-hit path**, no model call, one replica at 2 CPU. p50 and p95 are from
-the 40,079-chunk run:
+one 40,079-chunk run; the rps column is that same single run, which is exactly
+the kind of number the table above says to distrust:
 
-| Concurrency | rps @ 27 | rps @ 40,079 | p50 | p95 |
+| Concurrency | rps @ 27 (n=1) | rps @ 40,079 (n=1) | p50 | p95 |
 | --- | --- | --- | --- | --- |
 | 1 | 418 | 374 | 2.6ms | 2.9ms |
 | 2 | — | 416 | 4.8ms | 5.3ms |
@@ -153,19 +174,26 @@ the 40,079-chunk run:
 | 32 | 524 | 500 | 55.9ms | 95.2ms |
 | 64 | 528 | 399 | 124.7ms | 139.5ms |
 
-The shape survived: throughput still peaks near concurrency 16 and then
-flattens while latency grows linearly, and there were no errors at any level.
-The ceiling did not — 592 rps became 534, about 10% lower, and every level
-below the peak dropped by a similar fraction.
+**The 10% drop this page used to report was the noise floor.** 534 sits inside
+the 485–535 band five repeats produced on the current corpus; it is a
+high-ish draw, not a lower ceiling. The honest reading of the second column is
+"the current corpus sustains roughly 510 rps at its peak, ±10%".
 
-**What this run cannot tell you is why.** A cache hit is answered from Redis
-without touching Qdrant, so corpus size has no path by which to slow it down.
-The competing explanation is that Qdrant now holds 40,079 points in the same
-single-node cluster, and the API replica has correspondingly less of the host
-to itself. Separating the two would need the small corpus stood back up on an
-otherwise identical machine, which is not something this setup can do. So the
-number is recorded as measured and the prediction is recorded as unconfirmed,
-rather than either being explained away.
+What survives, and what does not:
+
+- **Survives:** the shape. Throughput rises to a saturation region around
+  concurrency 8–16 and then flattens while latency grows linearly, with no
+  errors at any level in any run. That held in all seven runs.
+- **Does not survive:** any claim built on comparing two single runs. The old
+  592 does sit above the best of the five current draws, by 10.6% over the
+  maximum — so a real difference is not excluded. But 592 was itself n=1 and
+  its own noise floor was never measured, so nothing here establishes one.
+
+The prediction this page used to make — that the cache-hit ceiling would not
+move, because a cache hit is answered from Redis without touching Qdrant — is
+therefore neither confirmed nor refuted. It is untested, and the instrument
+was too coarse to test it. Settling it needs repeats on both corpora, not a
+better explanation.
 
 **Cold path**, model in the loop: 1.0 rps at concurrency 4, p50 3.5s, p95 4.6s.
 At 27 chunks it was 1.1 rps at the same concurrency with p50 3.4s — unchanged
@@ -185,13 +213,19 @@ measured again while one cold model request is in flight:
 | quiet | 18.2ms | 21.1ms | 21.9ms | 0 / 320 |
 | during a 5.6s request | 16.1ms | 21.1ms | 73.8ms | 15 / 1560 |
 
-p95 is identical under load — 1.00x, against 1.36x at 27 chunks — so the
-property still holds at the percentile that describes the common case. The
-tail is worse than it was: p99 goes 21.9ms to 73.8ms, fifteen of 1,560 requests
-crossed 100ms where none of 2,360 did before, and one reached 1,461ms. That is
-a handful of outliers rather than the cluster of uniformly slow requests that
-blocking work on the event loop produces, but it is not zero any more, and
-saying so is the point of measuring twice.
+**This one compares quiet against busy inside a single run**, which is what
+makes it worth more than the table above it: both halves saw the same host, the
+same minute and the same replica, so the ~10% run-to-run drift cancels instead
+of accumulating. p95 is identical under load — 1.00x — so the property holds
+at the percentile describing the common case, and p99 rising 21.9ms to 73.8ms
+is the cost, paid by a handful of requests rather than by all of them.
+Synchronous work on the event loop would show up here as every request slowing
+together, not fifteen of 1,560.
+
+The cross-run half of this — 1.00x here against 1.36x at 27 chunks, fifteen
+over 100ms against none of 2,360 — is the comparison the noise floor says not
+to lean on. Both sides are n=1. Reported because it was measured, not because
+it shows anything.
 
 **The rate limit was the binding constraint, and it was a guess.** At 60/min
 the first run rate-limited 22 of 40 requests at concurrency 4, and all 40 at
