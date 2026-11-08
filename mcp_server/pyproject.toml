@@ -1,0 +1,33 @@
+[project]
+name = "atlas-mcp"
+version = "0.1.0"
+description = "MCP server exposing Atlas AI's handbook retrieval to MCP clients"
+requires-python = ">=3.11"
+# Deliberately not a dependency of the backend. The API image must not carry
+# an SDK for a process it never runs -- the same reason the cross-encoder is
+# an opt-in extra over there rather than a default.
+dependencies = [
+  "mcp>=2.3.0,<3",
+  "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3.0", "pytest-asyncio>=0.24.0", "ruff>=0.8.0", "mypy>=1.13.0"]
+
+[project.scripts]
+atlas-mcp = "atlas_mcp.server:main"
+
+[tool.mypy]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["atlas_mcp*"]

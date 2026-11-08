@@ -25,6 +25,7 @@ statements. Each one causes the failure it claims to handle.
 | `replica_check.py` | Two API replicas, addressed individually | Byte-identical rankings from each, for all three retrievers |
 | `injection_probe.py` | 17 attacks across 4 defence configurations | What leaks, adjudicated by a judge rather than by substring matching |
 | `distractor_probe.py` | — | Whether added documents actually compete, or are scenery |
+| `mcp_smoke.py` | Launches the real `atlas-mcp` over stdio against a live API | That the tools work outside their mocks, that the write gate refuses, and how much wall clock `ask_handbook` costs over `search_documents` ([why that matters](../docs/mcp.md#why-a-retrieval-only-endpoint)) |
 
 ## Build the corpus
 

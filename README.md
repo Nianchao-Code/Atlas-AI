@@ -204,6 +204,7 @@ Every `/api/v1` route requires an API key (see [Auth](docs/operations.md#auth));
 | `GET` | `/metrics` | Prometheus scrape (no key; not proxied to the browser) |
 | `POST` | `/api/v1/query` | Run the RAG graph (non-streaming) |
 | `POST` | `/api/v1/query/stream` | Same graph, streams answer tokens via SSE |
+| `POST` | `/api/v1/retrieve` | Passages only, no generation — for callers that are themselves models ([why](docs/mcp.md#why-a-retrieval-only-endpoint)) |
 | `POST` | `/api/v1/eval` | Start a golden-set run; returns `202` and a job id ([why](docs/eval-job.md)) |
 | `GET` | `/api/v1/eval/{job_id}` | Progress, then the report |
 | `GET` | `/api/v1/eval` | The most recent run |
@@ -213,11 +214,39 @@ Every `/api/v1` route requires an API key (see [Auth](docs/operations.md#auth));
 | `POST` | `/api/v1/documents` | Upload md / txt / pdf — `415` on other types, `413` over `MAX_UPLOAD_BYTES` (20MiB), `400` if the filename cannot be made safe ([why](docs/ingest-path.md)) |
 | `DELETE` | `/api/v1/documents/{id}` | Remove a document |
 
+## MCP server
+
+`mcp_server/` exposes Atlas to MCP clients (Claude Desktop, Claude Code) as a
+thin HTTP client over the API above, so key auth, the per-principal rate limit
+and cache isolation all still apply.
+
+```bash
+cd mcp_server && pip install -e ".[dev]"
+ATLAS_BASE_URL=http://127.0.0.1:8000 ATLAS_API_KEY=... atlas-mcp
+```
+
+Six tools. `search_documents` is the one to reach for: it returns source
+passages with no model call, because a caller that is itself a model does not
+need Atlas to write prose for it to read back. `ask_handbook` runs the full
+graph when Atlas's own abstention decision and faithfulness score are what
+you want — and an abstention is reported as one, never as an answer.
+
+`upload_document` and `run_eval` are off unless `ATLAS_MCP_ALLOW_WRITES=true`,
+because a model picks tools from a sentence and a golden-set run costs
+$0.055 measured. There is no delete tool at all.
+
+**The injection numbers do not transfer to this path.** The measured
+"nothing leaks" result was taken on Atlas's generation step; retrieval skips
+it, so document text reaches the *calling* model with only in-band labelling
+in front of it. [docs/mcp.md](docs/mcp.md#the-measured-injection-result-does-not-cover-this-path)
+says exactly what is and is not covered, and config snippets for both clients.
+
 ## Project layout
 
 ```
 backend/app/     FastAPI, LangGraph pipeline, retrieval, eval
 frontend/        Ask · Corpus · Eval · SLI dashboards
+mcp_server/      MCP tools over the API, for Claude Desktop / Claude Code
 samples/corpus   Kepler internal handbook (includes injection test doc)
 samples/eval     Golden question set (53 cases, tagged by category)
 docs/            Deep dives behind each number above, plus the demo recording

@@ -17,7 +17,7 @@ ignore = [
 [lint.isort]
 # Without this `app` sorts as third-party and lands next to pytest, which is
 # both wrong and inconsistent with how the package is laid out.
-known-first-party = ["app"]
+known-first-party = ["app", "atlas_mcp", "tests"]
 
 [lint.per-file-ignores]
 # These scripts live outside the package and must extend sys.path before they

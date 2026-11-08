@@ -37,7 +37,14 @@ from app.metrics import (
 from app.metrics import (
     render as render_metrics,
 )
-from app.models import DocumentRecord, MetricsSnapshot, QueryRequest, QueryResponse
+from app.models import (
+    DocumentRecord,
+    MetricsSnapshot,
+    QueryRequest,
+    QueryResponse,
+    RetrieveRequest,
+    RetrieveResponse,
+)
 from app.obs import Cache, obs
 from app.qa_cache import QACache
 from app.reconcile import reconcile
@@ -315,6 +322,26 @@ async def query(req: QueryRequest, s: StateDep, principal: PrincipalDep):
         faithfulness=payload.get("faithfulness"),
     )
     return payload
+
+
+@app.post("/api/v1/retrieve", response_model=RetrieveResponse)
+async def retrieve(req: RetrieveRequest, s: StateDep, principal: PrincipalDep):
+    """Passages without an answer, for callers that generate their own.
+
+    `/api/v1/query` always runs the whole graph, which is right when the caller
+    wants an answer and wrong when the caller is a language model. An MCP
+    client asking this service to write prose only to read that prose back
+    pays two models to do one job, and the second one works from a paraphrase
+    instead of the source. This returns what the generator would have been
+    given and stops there: no LLM call on this path, so no spend beyond the
+    one embedding the query costs.
+
+    Still authenticated and still rate limited -- it is cheaper, not free, and
+    it reads the whole corpus.
+    """
+    out = await s.pipeline.search(req.question, req.top_k)
+    obs.record_query(retrieval_ms=out["retrieval_ms"], prompt_tokens=0, cache_hit=False)
+    return out
 
 
 @app.post("/api/v1/query/stream")

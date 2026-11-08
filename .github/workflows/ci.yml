@@ -37,6 +37,12 @@ jobs:
       - name: Install backend
         working-directory: backend
         run: pip install -e ".[dev]"
+      # Installed in the lint job too, not only in `mcp`: ruff runs from the
+      # repo root over mcp_server/ as well, and its import-order rules need
+      # the package importable to classify first-party imports.
+      - name: Install MCP server
+        working-directory: mcp_server
+        run: pip install -e ".[dev]"
       # From the repo root: scripts/ imports from backend/app, and linting one
       # without the other leaves the seam between them unchecked.
       - name: Lint
@@ -55,6 +61,28 @@ jobs:
         run: pytest -q
       - name: Eval smoke gate
         run: python scripts/eval_gate.py --smoke
+
+  mcp:
+    runs-on: ubuntu-latest
+    # No Redis or Qdrant: this package never talks to them. It is an HTTP
+    # client over the API, so its tests mock at the transport and its one
+    # end-to-end test launches the real server against a stub backend on
+    # loopback. A job that needed the whole stack to test a client would be
+    # testing the stack.
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        working-directory: mcp_server
+        run: pip install -e ".[dev]"
+      - name: Typecheck
+        working-directory: mcp_server
+        run: mypy atlas_mcp
+      - name: Pytest
+        working-directory: mcp_server
+        run: pytest -q
 
   frontend:
     runs-on: ubuntu-latest

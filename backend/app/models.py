@@ -35,6 +35,31 @@ class QueryRequest(BaseModel):
     use_cache: bool = True
 
 
+class RetrieveRequest(BaseModel):
+    question: str
+    top_k: int = Field(default=6, ge=1, le=24)
+
+
+class Passage(BaseModel):
+    """One retrieved parent passage, with no model having seen it.
+
+    Deliberately not named `Citation`: a citation is evidence for an answer
+    this service produced, and these have no answer attached. The caller is
+    expected to be a model that will write its own.
+    """
+
+    doc_id: str
+    filename: str
+    chunk_id: str
+    score: float
+    text: str
+
+
+class RetrieveResponse(BaseModel):
+    passages: list[Passage]
+    retrieval_ms: float
+
+
 class QueryResponse(BaseModel):
     answer: str
     abstained: bool

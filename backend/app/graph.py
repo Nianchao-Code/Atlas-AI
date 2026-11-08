@@ -256,6 +256,36 @@ class Pipeline:
         )
         return {"hits": hits, "query_vec": vecs[0], "retrieval_ms": ms}
 
+    async def search(self, question: str, top_k: int) -> dict[str, Any]:
+        """Retrieval with no generation, for a caller that is itself a model.
+
+        Calls the graph's own `retrieve` node rather than reimplementing the
+        query against Qdrant. Two copies of a loop diverged in this repo once
+        already (the indexer's consumer), and the failure here would be worse
+        than a duplicated bug: an endpoint that ranked differently from the
+        pipeline would hand out passages that the pipeline's own citations
+        could never reproduce.
+
+        Parents are deduplicated for the same reason `compress` does it --
+        several children share one parent, and returning it twice spends the
+        caller's context on a copy -- and sanitised for the reason `compress`
+        does that: this text came out of documents, and
+        `samples/corpus/08-injection-bait.md` is in the corpus on purpose.
+        """
+        out = await self.retrieve({"question": question, "tracer": Tracer()})
+        hits: list[Hit] = out.get("hits") or []
+        passages = [
+            {
+                "doc_id": h.doc_id,
+                "filename": h.filename,
+                "chunk_id": h.chunk_id,
+                "score": h.score,
+                "text": self._sanitize(h.parent_text),
+            }
+            for h in _unique_parents(hits)[:top_k]
+        ]
+        return {"passages": passages, "retrieval_ms": float(out.get("retrieval_ms") or 0)}
+
     async def rerank(self, state: RAGState) -> dict[str, Any]:
         tracer: Tracer = state["tracer"]
         hits: list[Hit] = state.get("hits") or []
